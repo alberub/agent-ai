@@ -1,6 +1,10 @@
 const OpenAI = require("openai");
 const { openAiApiKey, openAiModel } = require("../config/env");
 const { toolDefinitions, handleToolCall } = require("../tools/customerTools");
+const {
+  getRecentChatMessages,
+  saveChatMessage,
+} = require("../repositories/chatRepository");
 
 const openai = new OpenAI({
   apiKey: openAiApiKey,
@@ -52,21 +56,33 @@ function parseResponseText(response) {
   return textParts.join("\n").trim();
 }
 
+function buildInputFromHistory(historyMessages) {
+  return historyMessages.map((message) => ({
+    role: message.role,
+    content: message.content,
+  }));
+}
+
 async function runCustomerAgent({ from, message }) {
+  await saveChatMessage({
+    telefono: from,
+    role: "user",
+    content: message,
+  });
+
+  const historyMessages = await getRecentChatMessages(from, 12);
+  const input = buildInputFromHistory(historyMessages);
+
   let response = await openai.responses.create({
     model: openAiModel,
     instructions: AGENT_INSTRUCTIONS,
     parallel_tool_calls: false,
     input: [
       {
-        role: "user",
-        content: [
-          {
-            type: "input_text",
-            text: `Telefono del remitente: ${from}\nMensaje del cliente: ${message}`,
-          },
-        ],
+        role: "system",
+        content: `Telefono del remitente: ${from}`,
       },
+      ...input,
     ],
     tools: toolDefinitions,
   });
@@ -104,6 +120,12 @@ async function runCustomerAgent({ from, message }) {
   if (!finalText) {
     throw new Error("El agente no produjo una respuesta final.");
   }
+
+  await saveChatMessage({
+    telefono: from,
+    role: "assistant",
+    content: finalText,
+  });
 
   return finalText;
 }
