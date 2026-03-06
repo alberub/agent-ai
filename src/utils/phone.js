@@ -19,8 +19,18 @@ function normalizeWhatsAppRecipient(phone) {
   return normalized;
 }
 
+function getShortDisplayName(name) {
+  const parts = String(name || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  return parts.slice(0, 2).join(" ");
+}
+
 module.exports = {
   normalizePhone,
   lastTenDigits,
   normalizeWhatsAppRecipient,
+  getShortDisplayName,
 };
