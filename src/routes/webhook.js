@@ -18,11 +18,11 @@ router.get("/webhook", (req, res) => {
 });
 
 router.post("/webhook", async (req, res) => {
-  
   res.sendStatus(200);
-  console.log("Mensaje entrante desde:", from, "texto:", text);
 
   const changes = req.body?.entry?.flatMap((entry) => entry.changes || []) || [];
+
+  console.log("Webhook recibido. Cambios:", changes.length);
 
   for (const change of changes) {
     const messages = change.value?.messages || [];
@@ -35,12 +35,15 @@ router.post("/webhook", async (req, res) => {
       const from = incomingMessage.from;
       const text = incomingMessage.text?.body || "";
 
+      console.log("Mensaje entrante desde:", from, "texto:", text);
+
       try {
         const reply = await runCustomerAgent({
           from,
           message: text,
         });
 
+        console.log("Respuesta generada para:", from, "respuesta:", reply);
         await sendWhatsAppTextMessage(from, reply);
       } catch (error) {
         console.error("Error procesando mensaje:", error);
