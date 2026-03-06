@@ -18,7 +18,9 @@ router.get("/webhook", (req, res) => {
 });
 
 router.post("/webhook", async (req, res) => {
+  
   res.sendStatus(200);
+  console.log("Mensaje entrante desde:", from, "texto:", text);
 
   const changes = req.body?.entry?.flatMap((entry) => entry.changes || []) || [];
 
