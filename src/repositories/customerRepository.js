@@ -6,20 +6,20 @@ async function findCustomerWithActiveCreditByPhone(phone) {
   const phone10 = lastTenDigits(phone);
 
   const result = await db.query(
-    `
+    String.raw`
       SELECT
-        c.id AS cliente_id,
+        c.cliente_id,
         c.telefono,
         c.nombre,
-        cr.id AS credito_id,
+        cr.credito_id,
         cr.status AS credito_status
       FROM clientes c
       LEFT JOIN creditos cr
-        ON cr.cliente_id = c.id
+        ON cr.cliente_id = c.cliente_id
        AND cr.status = 1
-      WHERE regexp_replace(coalesce(c.telefono, ''), '\\D', '', 'g') = $1
-         OR right(regexp_replace(coalesce(c.telefono, ''), '\\D', '', 'g'), 10) = $2
-      ORDER BY cr.id NULLS LAST
+      WHERE regexp_replace(coalesce(c.telefono, ''), '\D', '', 'g') = $1
+         OR right(regexp_replace(coalesce(c.telefono, ''), '\D', '', 'g'), 10) = $2
+      ORDER BY cr.credito_id NULLS LAST
       LIMIT 1
     `,
     [normalizedPhone, phone10]
