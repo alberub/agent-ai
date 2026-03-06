@@ -2,8 +2,11 @@ const {
   metaAccessToken,
   metaPhoneNumberId,
 } = require("../config/env");
+const { normalizeWhatsAppRecipient } = require("../utils/phone");
 
 async function sendWhatsAppTextMessage(to, body) {
+  const recipient = normalizeWhatsAppRecipient(to);
+
   const response = await fetch(
     `https://graph.facebook.com/v22.0/${metaPhoneNumberId}/messages`,
     {
@@ -14,7 +17,7 @@ async function sendWhatsAppTextMessage(to, body) {
       },
       body: JSON.stringify({
         messaging_product: "whatsapp",
-        to,
+        to: recipient,
         text: { body },
       }),
     }
