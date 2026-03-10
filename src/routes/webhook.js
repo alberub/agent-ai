@@ -4,16 +4,17 @@ const { runCustomerAgent } = require("../agent/openaiAgent");
 const { sendWhatsAppTextMessage } = require("../services/metaService");
 
 const router = express.Router();
-const pendingBySender = new Map();
-const MESSAGE_BATCH_WINDOW_MS = 1800;
+
+const conversations = new Map();
+const BUFFER_WINDOW_MS = 4000;
 
 function collectTextMessages(changes) {
-  const collected = [];
+  const messages = [];
 
   for (const change of changes) {
-    const messages = change.value?.messages || [];
+    const incomingMessages = change.value?.messages || [];
 
-    for (const incomingMessage of messages) {
+    for (const incomingMessage of incomingMessages) {
       if (incomingMessage.type !== "text") {
         continue;
       }
@@ -25,37 +26,99 @@ function collectTextMessages(changes) {
         continue;
       }
 
-      collected.push({ from, text });
+      messages.push({ from, text });
     }
   }
 
-  return collected;
+  return messages;
 }
 
-async function flushSenderQueue(from) {
-  const pending = pendingBySender.get(from);
+function getConversation(from) {
+  if (!conversations.has(from)) {
+    conversations.set(from, {
+      status: "idle",
+      buffer: [],
+      queuedWhileProcessing: [],
+      timer: null,
+      dueAt: null,
+    });
+  }
 
-  if (!pending) {
+  return conversations.get(from);
+}
+
+function clearConversationTimer(conversation) {
+  if (!conversation.timer) {
     return;
   }
 
-  pendingBySender.delete(from);
+  clearTimeout(conversation.timer);
+  conversation.timer = null;
+}
 
-  const text = pending.parts.join("\n");
+function scheduleFlush(from, delayMs) {
+  const conversation = getConversation(from);
+
+  clearConversationTimer(conversation);
+
+  conversation.timer = setTimeout(() => {
+    flushConversation(from).catch((error) => {
+      console.error("Error procesando cola de conversacion:", error);
+    });
+  }, delayMs);
+}
+
+function enqueueBufferedMessage(from, text) {
+  const conversation = getConversation(from);
+
+  conversation.buffer.push(text);
+  conversation.status = "buffering";
+  conversation.dueAt = Date.now() + BUFFER_WINDOW_MS;
+
+  scheduleFlush(from, BUFFER_WINDOW_MS);
+}
+
+function enqueueWhileProcessing(from, text) {
+  const conversation = getConversation(from);
+
+  conversation.queuedWhileProcessing.push(text);
+  conversation.dueAt = Date.now() + BUFFER_WINDOW_MS;
+}
+
+async function flushConversation(from) {
+  const conversation = getConversation(from);
+
+  if (conversation.status === "processing") {
+    return;
+  }
+
+  if (conversation.buffer.length === 0) {
+    conversation.status = "idle";
+    conversation.dueAt = null;
+    clearConversationTimer(conversation);
+    return;
+  }
+
+  clearConversationTimer(conversation);
+  conversation.status = "processing";
+
+  const parts = [...conversation.buffer];
+  conversation.buffer = [];
+  const message = parts.join("\n");
 
   console.log(
     "Procesando mensaje agrupado desde:",
     from,
     "fragmentos:",
-    pending.parts.length,
+    parts.length,
     "texto:",
-    text
+    message
   );
 
   try {
     const reply = await runCustomerAgent({
       from,
-      message: text,
+      message,
     });
 
     console.log("Respuesta generada para:", from, "respuesta:", reply);
@@ -71,33 +134,25 @@ async function flushSenderQueue(from) {
     } catch (sendError) {
       console.error("Error enviando mensaje de fallo:", sendError);
     }
+  } finally {
+    if (conversation.queuedWhileProcessing.length > 0) {
+      const nextBatch = [...conversation.queuedWhileProcessing];
+      conversation.queuedWhileProcessing = [];
+      conversation.buffer = nextBatch;
+      conversation.status = "buffering";
+
+      const remainingDelay = Math.max(
+        200,
+        (conversation.dueAt || Date.now()) - Date.now()
+      );
+
+      scheduleFlush(from, remainingDelay);
+      return;
+    }
+
+    conversation.status = "idle";
+    conversation.dueAt = null;
   }
-}
-
-function enqueueIncomingMessage(from, text) {
-  const existing = pendingBySender.get(from);
-
-  if (existing) {
-    clearTimeout(existing.timer);
-    existing.parts.push(text);
-    existing.timer = setTimeout(() => {
-      flushSenderQueue(from).catch((error) => {
-        console.error("Error vaciando cola de mensajes:", error);
-      });
-    }, MESSAGE_BATCH_WINDOW_MS);
-    return;
-  }
-
-  const timer = setTimeout(() => {
-    flushSenderQueue(from).catch((error) => {
-      console.error("Error vaciando cola de mensajes:", error);
-    });
-  }, MESSAGE_BATCH_WINDOW_MS);
-
-  pendingBySender.set(from, {
-    parts: [text],
-    timer,
-  });
 }
 
 router.get("/webhook", (req, res) => {
@@ -116,18 +171,28 @@ router.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 
   const changes = req.body?.entry?.flatMap((entry) => entry.changes || []) || [];
-  const textMessages = collectTextMessages(changes);
+  const messages = collectTextMessages(changes);
 
   console.log("Webhook recibido. Cambios:", changes.length);
 
-  for (const incomingMessage of textMessages) {
+  for (const incomingMessage of messages) {
+    const conversation = getConversation(incomingMessage.from);
+
     console.log(
-      "Mensaje recibido para cola desde:",
+      "Mensaje recibido desde:",
       incomingMessage.from,
+      "estado:",
+      conversation.status,
       "texto:",
       incomingMessage.text
     );
-    enqueueIncomingMessage(incomingMessage.from, incomingMessage.text);
+
+    if (conversation.status === "processing") {
+      enqueueWhileProcessing(incomingMessage.from, incomingMessage.text);
+      continue;
+    }
+
+    enqueueBufferedMessage(incomingMessage.from, incomingMessage.text);
   }
 });
 
