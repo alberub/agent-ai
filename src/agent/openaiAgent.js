@@ -31,6 +31,10 @@ Reglas obligatorias:
 15. Si la pregunta del usuario es ambigua pero menciona deuda total o balance general, prioriza responder con saldo restante del credito.
 16. No cierres cada respuesta con preguntas como "¿en que mas puedo ayudarte?" o "¿desea informacion adicional?".
 17. Cierra de forma sobria y natural. Solo invita a continuar si realmente aporta contexto, y hazlo de manera ocasional, no en todos los mensajes.
+18. Evita frases ceremoniosas o repetitivas como "quedo a tu disposicion", "estoy atento", "con gusto", "estoy aqui para ayudarte cuando lo necesites" o variantes similares.
+19. Si el usuario solo saluda, responde con un saludo corto de una sola linea.
+20. Si el usuario solo agradece, responde con una frase breve sin agregar preguntas.
+21. En WhatsApp, prioriza respuestas breves, naturales y directas. No suenes como call center.
 `;
 
 function parseResponseText(response) {
@@ -63,12 +67,60 @@ function buildInputFromHistory(historyMessages) {
   }));
 }
 
+function normalizeUserText(text) {
+  return String(text || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim();
+}
+
+function getLightweightReply(message) {
+  const normalized = normalizeUserText(message);
+
+  if (!normalized) {
+    return null;
+  }
+
+  const isGreeting =
+    /^(hola|buenas|buenos dias|buen dia|buenas tardes|buenas noches|que tal|hey|ey|holi)[!. ]*$/.test(
+      normalized
+    );
+
+  if (isGreeting) {
+    return "Hola. Puedo ayudarte con detalles de tu credito.";
+  }
+
+  const isThanks =
+    /^(gracias|muchas gracias|ok gracias|sale gracias|perfecto gracias|grcs)[!. ]*$/.test(
+      normalized
+    );
+
+  if (isThanks) {
+    return "Por nada, para servirle.";
+  }
+
+  return null;
+}
+
 async function runCustomerAgent({ from, message }) {
   await saveChatMessage({
     telefono: from,
     role: "user",
     content: message,
   });
+
+  const lightweightReply = getLightweightReply(message);
+
+  if (lightweightReply) {
+    await saveChatMessage({
+      telefono: from,
+      role: "assistant",
+      content: lightweightReply,
+    });
+
+    return lightweightReply;
+  }
 
   const historyMessages = await getRecentChatMessages(from, 12);
   const input = buildInputFromHistory(historyMessages);
