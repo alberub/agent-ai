@@ -4,9 +4,11 @@ const { runCustomerAgent } = require("../agent/openaiAgent");
 const { sendWhatsAppTextMessage } = require("../services/metaService");
 
 const router = express.Router();
+const pendingBySender = new Map();
+const MESSAGE_BATCH_WINDOW_MS = 1800;
 
-function groupTextMessagesBySender(changes) {
-  const groupedMessages = new Map();
+function collectTextMessages(changes) {
+  const collected = [];
 
   for (const change of changes) {
     const messages = change.value?.messages || [];
@@ -19,23 +21,83 @@ function groupTextMessagesBySender(changes) {
       const from = incomingMessage.from;
       const text = (incomingMessage.text?.body || "").trim();
 
-      if (!text) {
+      if (!from || !text) {
         continue;
       }
 
-      if (!groupedMessages.has(from)) {
-        groupedMessages.set(from, []);
-      }
-
-      groupedMessages.get(from).push(text);
+      collected.push({ from, text });
     }
   }
 
-  return Array.from(groupedMessages.entries()).map(([from, parts]) => ({
+  return collected;
+}
+
+async function flushSenderQueue(from) {
+  const pending = pendingBySender.get(from);
+
+  if (!pending) {
+    return;
+  }
+
+  pendingBySender.delete(from);
+
+  const text = pending.parts.join("\n");
+
+  console.log(
+    "Procesando mensaje agrupado desde:",
     from,
-    text: parts.join("\n"),
-    partsCount: parts.length,
-  }));
+    "fragmentos:",
+    pending.parts.length,
+    "texto:",
+    text
+  );
+
+  try {
+    const reply = await runCustomerAgent({
+      from,
+      message: text,
+    });
+
+    console.log("Respuesta generada para:", from, "respuesta:", reply);
+    await sendWhatsAppTextMessage(from, reply);
+  } catch (error) {
+    console.error("Error procesando mensaje:", error);
+
+    try {
+      await sendWhatsAppTextMessage(
+        from,
+        "No pude procesar tu solicitud en este momento. Intenta nuevamente en unos minutos."
+      );
+    } catch (sendError) {
+      console.error("Error enviando mensaje de fallo:", sendError);
+    }
+  }
+}
+
+function enqueueIncomingMessage(from, text) {
+  const existing = pendingBySender.get(from);
+
+  if (existing) {
+    clearTimeout(existing.timer);
+    existing.parts.push(text);
+    existing.timer = setTimeout(() => {
+      flushSenderQueue(from).catch((error) => {
+        console.error("Error vaciando cola de mensajes:", error);
+      });
+    }, MESSAGE_BATCH_WINDOW_MS);
+    return;
+  }
+
+  const timer = setTimeout(() => {
+    flushSenderQueue(from).catch((error) => {
+      console.error("Error vaciando cola de mensajes:", error);
+    });
+  }, MESSAGE_BATCH_WINDOW_MS);
+
+  pendingBySender.set(from, {
+    parts: [text],
+    timer,
+  });
 }
 
 router.get("/webhook", (req, res) => {
@@ -54,42 +116,18 @@ router.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 
   const changes = req.body?.entry?.flatMap((entry) => entry.changes || []) || [];
-  const groupedMessages = groupTextMessagesBySender(changes);
+  const textMessages = collectTextMessages(changes);
 
   console.log("Webhook recibido. Cambios:", changes.length);
 
-  for (const incomingMessage of groupedMessages) {
-    const { from, text, partsCount } = incomingMessage;
-
+  for (const incomingMessage of textMessages) {
     console.log(
-      "Mensaje entrante desde:",
-      from,
-      "fragmentos:",
-      partsCount,
+      "Mensaje recibido para cola desde:",
+      incomingMessage.from,
       "texto:",
-      text
+      incomingMessage.text
     );
-
-    try {
-      const reply = await runCustomerAgent({
-        from,
-        message: text,
-      });
-
-      console.log("Respuesta generada para:", from, "respuesta:", reply);
-      await sendWhatsAppTextMessage(from, reply);
-    } catch (error) {
-      console.error("Error procesando mensaje:", error);
-
-      try {
-        await sendWhatsAppTextMessage(
-          from,
-          "No pude procesar tu solicitud en este momento. Intenta nuevamente en unos minutos."
-        );
-      } catch (sendError) {
-        console.error("Error enviando mensaje de fallo:", sendError);
-      }
-    }
+    enqueueIncomingMessage(incomingMessage.from, incomingMessage.text);
   }
 });
 
