@@ -27,6 +27,35 @@ function getCurrentDateInMexico() {
   return `${year}-${month}-${day}`;
 }
 
+function formatSpanishDate(value) {
+  if (!value) {
+    return "";
+  }
+
+  const [year, month, day] = String(value).slice(0, 10).split("-");
+
+  if (!year || !month || !day) {
+    return String(value);
+  }
+
+  const monthNames = {
+    "01": "enero",
+    "02": "febrero",
+    "03": "marzo",
+    "04": "abril",
+    "05": "mayo",
+    "06": "junio",
+    "07": "julio",
+    "08": "agosto",
+    "09": "septiembre",
+    "10": "octubre",
+    "11": "noviembre",
+    "12": "diciembre",
+  };
+
+  return `${Number(day)} de ${monthNames[month]}, ${year}`;
+}
+
 function formatMoney(value) {
   return new Intl.NumberFormat("es-MX", {
     style: "currency",
@@ -205,20 +234,28 @@ async function buildBusinessReply({ from, message, historyMessages }) {
 
     if (isPaidThisMonthIntent(normalized)) {
       if (compareYearMonth(latestPayment.fechaPago, today)) {
-        return `Sí, el último pago registrado del crédito ${creditoId} fue el ${latestPayment.fechaPago} por ${formatMoney(latestPayment.abonoCliente)}.`;
+        return `Sí, el último pago registrado del crédito ${creditoId} fue el ${formatSpanishDate(
+          latestPayment.fechaPago
+        )} por ${formatMoney(latestPayment.abonoCliente)}.`;
       }
 
-      return `No veo un pago registrado este mes para el crédito ${creditoId}. El último pago registrado fue el ${latestPayment.fechaPago} por ${formatMoney(latestPayment.abonoCliente)}.`;
+      return `No veo un pago registrado este mes para el crédito ${creditoId}. El último pago registrado fue el ${formatSpanishDate(
+        latestPayment.fechaPago
+      )} por ${formatMoney(latestPayment.abonoCliente)}.`;
     }
 
     if (/(ultimo pago|fecha de pago|abono|abone|pague|pago realizado)/.test(normalized)) {
-      return `El último pago registrado del crédito ${creditoId} fue el ${latestPayment.fechaPago} por ${formatMoney(latestPayment.abonoCliente)}.`;
+      return `El último pago registrado del crédito ${creditoId} fue el ${formatSpanishDate(
+        latestPayment.fechaPago
+      )} por ${formatMoney(latestPayment.abonoCliente)}.`;
     }
 
     const lines = payments.pagos
       .map(
         (payment) =>
-          `- ${payment.fechaPago}: ${formatMoney(payment.abonoCliente)}`
+          `- ${formatSpanishDate(payment.fechaPago)}: ${formatMoney(
+            payment.abonoCliente
+          )}`
       )
       .join("\n");
 
@@ -285,9 +322,9 @@ async function buildBusinessReply({ from, message, historyMessages }) {
     }
 
     if (/fecha de inicio/.test(normalized)) {
-      return `La fecha de inicio del crédito ${creditoId} es ${String(
-        summary.fechaInicio || ""
-      ).slice(0, 10)}.`;
+      return `La fecha de inicio del crédito ${creditoId} es ${formatSpanishDate(
+        summary.fechaInicio
+      )}.`;
     }
 
     if (/mensualidad/.test(normalized) && !/proximo pago/.test(normalized)) {
@@ -297,9 +334,9 @@ async function buildBusinessReply({ from, message, historyMessages }) {
     }
 
     if (/proximo pago/.test(normalized)) {
-      return `El próximo pago del crédito ${creditoId} es el ${String(
-        summary.proximoPago || ""
-      ).slice(0, 10)} por ${formatMoney(summary.mensualidad)}.`;
+      return `El próximo pago del crédito ${creditoId} es el ${formatSpanishDate(
+        summary.proximoPago
+      )} por ${formatMoney(summary.mensualidad)}.`;
     }
 
     if (isBalanceIntent(normalized)) {
@@ -312,7 +349,7 @@ async function buildBusinessReply({ from, message, historyMessages }) {
       summary.saldoRestante
     )}, mensualidad ${formatMoney(summary.mensualidad)}, adeudo ${formatMoney(
       summary.adeudo
-    )} y próximo pago ${String(summary.proximoPago || "").slice(0, 10)}.`;
+    )} y próximo pago ${formatSpanishDate(summary.proximoPago)}.`;
   }
 
   return "Puedo ayudarle con saldo, adeudo, pagos, agua, predial y otros detalles de su crédito.";
