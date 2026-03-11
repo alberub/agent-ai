@@ -22,6 +22,11 @@ const toolDefinitions = [
           type: "string",
           description: "Numero del cliente que envio el mensaje.",
         },
+        credito_id: {
+          type: "number",
+          description:
+            "Credito especifico a consultar cuando el cliente tenga mas de un credito activo.",
+        },
       },
       required: ["telefono"],
     },
@@ -99,7 +104,7 @@ const toolDefinitions = [
           description: "Cantidad maxima de pagos a consultar.",
         },
       },
-      required: ["credito_id", "limite"],
+      required: ["credito_id"],
     },
   },
 ];
@@ -120,7 +125,10 @@ async function handleToolCall(toolName, args) {
         };
       }
 
-      if (!customer.credito_id) {
+      const shortName = getShortDisplayName(customer.nombre);
+      const activeCredits = customer.creditos || [];
+
+      if (activeCredits.length === 0) {
         const shortName = getShortDisplayName(customer.nombre);
 
         return {
@@ -136,7 +144,48 @@ async function handleToolCall(toolName, args) {
         };
       }
 
-      const shortName = getShortDisplayName(customer.nombre);
+      if (activeCredits.length > 1) {
+        const requestedCreditId = Number(args.credito_id);
+        const selectedCredit = activeCredits.find(
+          (credit) => credit.credito_id === requestedCreditId
+        );
+
+        if (!requestedCreditId || !selectedCredit) {
+          return {
+            ok: true,
+            exists: true,
+            activeCredit: true,
+            multipleActiveCredits: true,
+            requiresCreditSelection: true,
+            clienteId: customer.cliente_id,
+            nombre: shortName || customer.nombre,
+            telefono: customer.telefono,
+            creditos: activeCredits.map((credit) => ({
+              creditoId: credit.credito_id,
+            })),
+            message:
+              "El cliente tiene mas de un credito activo. Debe indicar el credito_id que desea consultar.",
+          };
+        }
+
+        return {
+          ok: true,
+          exists: true,
+          activeCredit: true,
+          multipleActiveCredits: true,
+          requiresCreditSelection: false,
+          clienteId: customer.cliente_id,
+          nombre: shortName || customer.nombre,
+          telefono: customer.telefono,
+          creditoId: selectedCredit.credito_id,
+          creditos: activeCredits.map((credit) => ({
+            creditoId: credit.credito_id,
+          })),
+          message: `Cliente validado correctamente para el credito ${selectedCredit.credito_id}.`,
+        };
+      }
+
+      const selectedCredit = activeCredits[0];
 
       return {
         ok: true,
@@ -146,7 +195,7 @@ async function handleToolCall(toolName, args) {
         clienteId: customer.cliente_id,
         nombre: shortName || customer.nombre,
         telefono: customer.telefono,
-        creditoId: customer.credito_id,
+        creditoId: selectedCredit.credito_id,
         message: "Cliente validado correctamente con credito activo.",
       };
     }

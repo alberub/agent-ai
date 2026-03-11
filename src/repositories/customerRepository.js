@@ -33,12 +33,27 @@ async function findCustomerWithActiveCreditByPhone(phone) {
           ELSE 1
         END,
         cr.credito_id NULLS LAST
-      LIMIT 1
     `,
     [normalizedPhone, phone10]
   );
 
-  return result.rows[0] || null;
+  if (result.rows.length === 0) {
+    return null;
+  }
+
+  const customer = {
+    cliente_id: result.rows[0].cliente_id,
+    telefono: result.rows[0].telefono,
+    nombre: result.rows[0].nombre,
+    creditos: result.rows
+      .filter((row) => row.credito_id)
+      .map((row) => ({
+        credito_id: row.credito_id,
+        credito_status: row.credito_status,
+      })),
+  };
+
+  return customer;
 }
 
 async function getDebtByCreditId(creditoId) {
@@ -165,10 +180,11 @@ async function getCreditPaymentsByCreditId(creditoId, limit = 5) {
       SELECT
         credito_id,
         fecha_pago,
-        abono_cliente
+        abono_cliente,
+        fecha_creacion
       FROM pagos_credito
       WHERE credito_id = $1
-      ORDER BY fecha_pago DESC, id DESC
+      ORDER BY fecha_pago DESC, fecha_creacion DESC
       LIMIT $2
     `,
     [creditoId, limit]
