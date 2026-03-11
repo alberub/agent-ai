@@ -1,80 +1,8 @@
-const OpenAI = require("openai");
-const { openAiApiKey, openAiModel } = require("../config/env");
-const { toolDefinitions, handleToolCall } = require("../tools/customerTools");
 const {
   getRecentChatMessages,
   saveChatMessage,
 } = require("../repositories/chatRepository");
-
-const openai = new OpenAI({
-  apiKey: openAiApiKey,
-});
-
-const AGENT_INSTRUCTIONS = `
-Eres un asistente de cobranza por WhatsApp.
-
-Reglas obligatorias:
-1. Solo puedes responder temas relacionados con el credito: saldo restante, adeudo actual, pagos, mensualidad, proximo pago, resumen del credito, agua, predial y datos propios del credito como lote, manzana, plazo o fecha de inicio.
-2. Nunca debes responder ni revelar datos personales del cliente, como direccion, colonia, municipio, email, telefonos alternos o cualquier otro dato no relacionado con el credito.
-3. Si el usuario pide informacion no relacionada con su credito, responde de forma breve y amable que solo puedes ayudarle con temas de su credito.
-4. Antes de responder sobre credito, adeudo o estatus, primero usa la tool validar_cliente_por_telefono con el numero del remitente.
-5. Si el cliente no existe o no tiene credito activo con status 1, responde que se deben actualizar los datos del cliente.
-6. Si validar_cliente_por_telefono indica que hay varios creditos activos, no respondas la consulta todavia. Pide que el cliente indique el credito_id que desea consultar y usa ese credito_id en la siguiente validacion.
-7. Cuando exista mas de un credito activo, siempre especifica y usa el credito_id que se desea consultar antes de llamar cualquier otra tool.
-8. Si el usuario pregunta por adeudo del credito, usa consultar_adeudo_credito con el credito_id obtenido.
-9. Si el usuario pregunta por saldo, mensualidad, proximo pago, lote, manzana, plazo, fecha de inicio o resumen del credito, usa consultar_resumen_credito con el credito_id obtenido.
-10. Si el usuario pregunta por agua, predial o adeudos adicionales, usa consultar_adeudos_adicionales_credito con el credito_id obtenido.
-11. Si el usuario pregunta por pagos realizados, ultimo pago, fecha de pago, abono, historial de pagos u observaciones de un pago, usa consultar_pagos_credito con el credito_id obtenido.
-12. Cuando uses informacion de pagos_credito, toma abono_cliente como el pago realizado por el cliente.
-13. Nunca devuelvas ni menciones imagenes relacionadas con pagos.
-14. Si mencionas una fecha, usa solo formato YYYY-MM-DD.
-15. Si el usuario pregunta si ya pago este mes, compara la fecha actual con la fechaPago mas reciente devuelta por consultar_pagos_credito. Solo responde que ya pago este mes si ambas fechas caen en el mismo mes y ano.
-16. Responde siempre en espanol, de forma breve, clara y profesional.
-17. No inventes datos que no provengan de las tools.
-18. No repitas el nombre del cliente en cada mensaje. Por defecto, no uses el nombre salvo si ayuda de forma puntual.
-19. Si usas el nombre del cliente, usa solo el campo nombre devuelto por las tools, sin expandirlo ni completar apellidos adicionales.
-20. Interpreta "cuanto debo", "cuanto me falta", "cual es mi balance" o "cuanto resta por pagar" como una consulta de saldo restante del credito, por lo que debes usar consultar_resumen_credito.
-21. Interpreta "adeudo", "pago vencido", "pendiente al dia de hoy" o "debo hoy" como consulta de adeudo actual, por lo que debes usar consultar_adeudo_credito.
-22. Si la pregunta del usuario es ambigua pero menciona deuda total o balance general, prioriza responder con saldo restante del credito.
-23. No cierres cada respuesta con preguntas como "¿en que mas puedo ayudarte?" o "¿desea informacion adicional?".
-24. Cierra de forma sobria y natural.
-25. Evita frases ceremoniosas o repetitivas como "quedo a tu disposicion", "estoy atento", "con gusto", "estoy aqui para ayudarte cuando lo necesites" o variantes similares.
-26. En WhatsApp, prioriza respuestas breves, naturales y directas. No suenes como call center.
-27. Si el usuario solo saluda, responde solo con un saludo breve.
-28. Si el usuario solo agradece, responde solo con una frase breve y amable.
-`;
-
-function parseResponseText(response) {
-  if (response.output_text) {
-    return response.output_text.trim();
-  }
-
-  const messages = response.output || [];
-  const textParts = [];
-
-  for (const item of messages) {
-    if (item.type !== "message" || !Array.isArray(item.content)) {
-      continue;
-    }
-
-    for (const content of item.content) {
-      if (content.type === "output_text" && content.text) {
-        textParts.push(content.text);
-      }
-    }
-  }
-
-  return textParts.join("\n").trim();
-}
-
-function buildInputFromHistory(historyMessages) {
-  return historyMessages
-    .filter((message) => message.role === "user")
-    .map((message) => ({
-      role: "user",
-      content: message.content,
-    }));
-}
+const { handleToolCall } = require("../tools/customerTools");
 
 function normalizeUserText(text) {
   return String(text || "")
@@ -84,7 +12,128 @@ function normalizeUserText(text) {
     .trim();
 }
 
-function getGreetingReply(normalized) {
+function getCurrentDateInMexico() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Mexico_City",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  const day = parts.find((part) => part.type === "day")?.value;
+
+  return `${year}-${month}-${day}`;
+}
+
+function formatMoney(value) {
+  return new Intl.NumberFormat("es-MX", {
+    style: "currency",
+    currency: "MXN",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(Number(value || 0));
+}
+
+function extractCreditoId(text) {
+  const value = String(text || "");
+
+  const labeledMatch = value.match(/credito[_\s-]*id[:\s#-]*(\d+)/i);
+  if (labeledMatch) {
+    return Number(labeledMatch[1]);
+  }
+
+  const creditoMatch = value.match(/credito[:\s#-]*(\d+)/i);
+  if (creditoMatch) {
+    return Number(creditoMatch[1]);
+  }
+
+  const hashMatch = value.match(/#(\d{2,})/);
+  if (hashMatch) {
+    return Number(hashMatch[1]);
+  }
+
+  const onlyNumberMatch = value.trim().match(/^(\d{2,})$/);
+  if (onlyNumberMatch) {
+    return Number(onlyNumberMatch[1]);
+  }
+
+  return null;
+}
+
+function findCreditoIdInHistory(messages) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    const creditoId = extractCreditoId(message.content);
+
+    if (creditoId) {
+      return creditoId;
+    }
+  }
+
+  return null;
+}
+
+function isGreetingOnly(normalized) {
+  return /^(hola|buenas|buenos dias|buen dia|buenas tardes|buenas noches|que tal|hey|ey|holi)[!. ]*$/.test(
+    normalized
+  );
+}
+
+function isThanksOnly(normalized) {
+  return /^(gracias|muchas gracias|ok gracias|sale gracias|perfecto gracias|grcs)[!. ]*$/.test(
+    normalized
+  );
+}
+
+function isSocialOnly(normalized) {
+  return /^(como estas|como te encuentras|como andas|que tal estas)[?.! ]*$/.test(
+    normalized
+  );
+}
+
+function isOffTopic(normalized) {
+  return /(direccion|colonia|municipio|correo|email|telefono secundario|telefono alterno|datos del cliente|numero de cliente|cliente id)/.test(
+    normalized
+  );
+}
+
+function isPaymentIntent(normalized) {
+  return /(ultimo pago|ultimos pagos|mis pagos|historial de pagos|abono|abone|abone|pague|pago realizado|pago de este mes|ya pague|ya realice el pago|fecha de pago|pagos)/.test(
+    normalized
+  );
+}
+
+function isAdditionalChargesIntent(normalized) {
+  return /(agua|predial)/.test(normalized);
+}
+
+function isDebtIntent(normalized) {
+  return /(adeudo|mora|vencido|pendiente al dia|debo hoy|pago vencido)/.test(
+    normalized
+  );
+}
+
+function isBalanceIntent(normalized) {
+  return /(saldo restante|balance|cuanto debo|cuanto me falta|resta por pagar|balance total|saldo total|saldo del credito)/.test(
+    normalized
+  );
+}
+
+function isCreditDetailIntent(normalized) {
+  return /(mensualidad|proximo pago|lote|manzana|plazo|fecha de inicio|resumen|informacion de mi credito|informacion acerca de mi credito|detalles del credito|credito)/.test(
+    normalized
+  );
+}
+
+function isPaidThisMonthIntent(normalized) {
+  return /(ya pague este mes|ya realice el pago de este mes|pago de este mes|ya tengo registrado el pago de este mes)/.test(
+    normalized
+  );
+}
+
+function buildGreetingReply(normalized) {
   if (/^buenos dias[!. ]*$/.test(normalized)) {
     return "Buenos dias.";
   }
@@ -97,44 +146,176 @@ function getGreetingReply(normalized) {
     return "Buenas noches.";
   }
 
-  if (/^(hola|buenas|que tal|hey|ey|holi)[!. ]*$/.test(normalized)) {
-    return "Hola.";
-  }
-
-  return null;
+  return "Hola.";
 }
 
-function getLightweightReply(message) {
+function compareYearMonth(dateA, dateB) {
+  return String(dateA || "").slice(0, 7) === String(dateB || "").slice(0, 7);
+}
+
+async function validateCreditContext(from, message, historyMessages) {
+  const explicitCreditoId = extractCreditoId(message);
+  const historicalCreditoId = findCreditoIdInHistory(
+    historyMessages.filter((item) => item.role === "user")
+  );
+  const creditoId = explicitCreditoId || historicalCreditoId || undefined;
+
+  const validation = await handleToolCall("validar_cliente_por_telefono", {
+    telefono: from,
+    ...(creditoId ? { credito_id: creditoId } : {}),
+  });
+
+  return validation;
+}
+
+async function buildBusinessReply({ from, message, historyMessages }) {
   const normalized = normalizeUserText(message);
+  const validation = await validateCreditContext(from, message, historyMessages);
 
-  if (!normalized) {
-    return null;
+  if (!validation.exists || !validation.activeCredit) {
+    return validation.message;
   }
 
-  const greetingReply = getGreetingReply(normalized);
-  if (greetingReply) {
-    return greetingReply;
+  if (validation.requiresCreditSelection) {
+    const creditList = (validation.creditos || [])
+      .map((credit) => String(credit.creditoId))
+      .join(", ");
+
+    return `Encontré más de un crédito activo asociado a este número. Indícame el credito_id que deseas consultar: ${creditList}.`;
   }
 
-  const isSocialCheckIn =
-    /^(como estas|como te encuentras|como andas|que tal estas)[?.! ]*$/.test(
-      normalized
-    );
+  const creditoId = validation.creditoId;
 
-  if (isSocialCheckIn) {
-    return "Bien, gracias.";
+  if (isOffTopic(normalized)) {
+    return "Solo puedo ayudarle con información relacionada con su crédito.";
   }
 
-  const isThanks =
-    /^(gracias|muchas gracias|ok gracias|sale gracias|perfecto gracias|grcs)[!. ]*$/.test(
-      normalized
-    );
+  if (isPaidThisMonthIntent(normalized) || isPaymentIntent(normalized)) {
+    const payments = await handleToolCall("consultar_pagos_credito", {
+      credito_id: creditoId,
+      limite: 3,
+    });
 
-  if (isThanks) {
-    return "Para servirle.";
+    if (!payments.totalPagos || !payments.pagos?.length) {
+      return `No encontré pagos registrados para el crédito ${creditoId}.`;
+    }
+
+    const latestPayment = payments.pagos[0];
+    const today = getCurrentDateInMexico();
+
+    if (isPaidThisMonthIntent(normalized)) {
+      if (compareYearMonth(latestPayment.fechaPago, today)) {
+        return `Sí, el último pago registrado del crédito ${creditoId} fue el ${latestPayment.fechaPago} por ${formatMoney(latestPayment.abonoCliente)}.`;
+      }
+
+      return `No veo un pago registrado este mes para el crédito ${creditoId}. El último pago registrado fue el ${latestPayment.fechaPago} por ${formatMoney(latestPayment.abonoCliente)}.`;
+    }
+
+    if (/(ultimo pago|fecha de pago|abono|abone|pague|pago realizado)/.test(normalized)) {
+      return `El último pago registrado del crédito ${creditoId} fue el ${latestPayment.fechaPago} por ${formatMoney(latestPayment.abonoCliente)}.`;
+    }
+
+    const lines = payments.pagos
+      .map(
+        (payment) =>
+          `- ${payment.fechaPago}: ${formatMoney(payment.abonoCliente)}`
+      )
+      .join("\n");
+
+    return `Pagos registrados del crédito ${creditoId}:\n${lines}`;
   }
 
-  return null;
+  if (isAdditionalChargesIntent(normalized)) {
+    const charges = await handleToolCall("consultar_adeudos_adicionales_credito", {
+      credito_id: creditoId,
+    });
+
+    if (/agua/.test(normalized) && !/predial/.test(normalized)) {
+      return `El adeudo de agua del crédito ${creditoId} es ${formatMoney(
+        charges.adeudoAgua
+      )}.`;
+    }
+
+    if (/predial/.test(normalized) && !/agua/.test(normalized)) {
+      return `El adeudo predial del crédito ${creditoId} es ${formatMoney(
+        charges.adeudoPredial
+      )}.`;
+    }
+
+    return `Los adeudos adicionales del crédito ${creditoId} son: agua ${formatMoney(
+      charges.adeudoAgua
+    )} y predial ${formatMoney(charges.adeudoPredial)}.`;
+  }
+
+  if (isDebtIntent(normalized) && !isBalanceIntent(normalized)) {
+    const debt = await handleToolCall("consultar_adeudo_credito", {
+      credito_id: creditoId,
+    });
+
+    return `El adeudo actual del crédito ${creditoId} es ${formatMoney(
+      debt.adeudoTotal
+    )}.`;
+  }
+
+  if (isBalanceIntent(normalized) || isCreditDetailIntent(normalized)) {
+    const summary = await handleToolCall("consultar_resumen_credito", {
+      credito_id: creditoId,
+    });
+
+    if (!summary.ok) {
+      return summary.message;
+    }
+
+    if (/lote/.test(normalized) || /manzana/.test(normalized)) {
+      const parts = [];
+
+      if (/lote/.test(normalized)) {
+        parts.push(`lote ${summary.lote}`);
+      }
+
+      if (/manzana/.test(normalized)) {
+        parts.push(`manzana ${summary.manzana}`);
+      }
+
+      return `El crédito ${creditoId} corresponde a ${parts.join(" y ")}.`;
+    }
+
+    if (/plazo/.test(normalized)) {
+      return `El plazo del crédito ${creditoId} es de ${summary.plazoMeses} meses.`;
+    }
+
+    if (/fecha de inicio/.test(normalized)) {
+      return `La fecha de inicio del crédito ${creditoId} es ${String(
+        summary.fechaInicio || ""
+      ).slice(0, 10)}.`;
+    }
+
+    if (/mensualidad/.test(normalized) && !/proximo pago/.test(normalized)) {
+      return `La mensualidad del crédito ${creditoId} es ${formatMoney(
+        summary.mensualidad
+      )}.`;
+    }
+
+    if (/proximo pago/.test(normalized)) {
+      return `El próximo pago del crédito ${creditoId} es el ${String(
+        summary.proximoPago || ""
+      ).slice(0, 10)} por ${formatMoney(summary.mensualidad)}.`;
+    }
+
+    if (isBalanceIntent(normalized)) {
+      return `El saldo restante del crédito ${creditoId} es ${formatMoney(
+        summary.saldoRestante
+      )}.`;
+    }
+
+    return `Resumen del crédito ${creditoId}: saldo restante ${formatMoney(
+      summary.saldoRestante
+    )}, mensualidad ${formatMoney(summary.mensualidad)}, adeudo ${formatMoney(
+      summary.adeudo
+    )} y próximo pago ${String(summary.proximoPago || "").slice(0, 10)}.`;
+  }
+
+  return "Puedo ayudarle con saldo, adeudo, pagos, agua, predial y otros detalles de su crédito.";
 }
 
 async function runCustomerAgent({ from, message }) {
@@ -144,78 +325,32 @@ async function runCustomerAgent({ from, message }) {
     content: message,
   });
 
-  const historyMessages = await getRecentChatMessages(from, 12);
-  const lightweightReply = getLightweightReply(message);
+  const historyMessages = await getRecentChatMessages(from, 20);
+  const normalized = normalizeUserText(message);
 
-  if (lightweightReply) {
-    await saveChatMessage({
-      telefono: from,
-      role: "assistant",
-      content: lightweightReply,
+  let reply;
+
+  if (isGreetingOnly(normalized)) {
+    reply = buildGreetingReply(normalized);
+  } else if (isSocialOnly(normalized)) {
+    reply = "Bien, gracias.";
+  } else if (isThanksOnly(normalized)) {
+    reply = "Para servirle.";
+  } else {
+    reply = await buildBusinessReply({
+      from,
+      message,
+      historyMessages,
     });
-
-    return lightweightReply;
-  }
-
-  const input = buildInputFromHistory(historyMessages);
-
-  let response = await openai.responses.create({
-    model: openAiModel,
-    instructions: AGENT_INSTRUCTIONS,
-    parallel_tool_calls: false,
-    input: [
-      {
-        role: "system",
-        content: `Telefono del remitente: ${from}\nFecha actual: ${new Date()
-          .toISOString()
-          .slice(0, 10)}`,
-      },
-      ...input,
-    ],
-    tools: toolDefinitions,
-  });
-
-  while (response.output?.some((item) => item.type === "function_call")) {
-    const toolOutputs = [];
-
-    for (const item of response.output) {
-      if (item.type !== "function_call") {
-        continue;
-      }
-
-      const args = JSON.parse(item.arguments || "{}");
-      const result = await handleToolCall(item.name, args);
-
-      toolOutputs.push({
-        type: "function_call_output",
-        call_id: item.call_id,
-        output: JSON.stringify(result),
-      });
-    }
-
-    response = await openai.responses.create({
-      model: openAiModel,
-      previous_response_id: response.id,
-      instructions: AGENT_INSTRUCTIONS,
-      parallel_tool_calls: false,
-      input: toolOutputs,
-      tools: toolDefinitions,
-    });
-  }
-
-  const finalText = parseResponseText(response);
-
-  if (!finalText) {
-    throw new Error("El agente no produjo una respuesta final.");
   }
 
   await saveChatMessage({
     telefono: from,
     role: "assistant",
-    content: finalText,
+    content: reply,
   });
 
-  return finalText;
+  return reply;
 }
 
 module.exports = {
