@@ -27,6 +27,16 @@ const toolDefinitions = [
           description:
             "Credito especifico a consultar cuando el cliente tenga mas de un credito activo.",
         },
+        lote: {
+          type: "number",
+          description:
+            "Lote del credito a consultar cuando el cliente tenga mas de un credito activo.",
+        },
+        manzana: {
+          type: "number",
+          description:
+            "Manzana del credito a consultar cuando el cliente tenga mas de un credito activo.",
+        },
       },
       required: ["telefono"],
     },
@@ -152,11 +162,18 @@ async function handleToolCall(toolName, args) {
         );
         const sameCampestre = distinctCampestres.size <= 1;
         const requestedCreditId = Number(args.credito_id);
+        const requestedLote = Number(args.lote);
+        const requestedManzana = Number(args.manzana);
         const selectedCredit = activeCredits.find(
-          (credit) => credit.credito_id === requestedCreditId
+          (credit) =>
+            credit.credito_id === requestedCreditId ||
+            (requestedLote > 0 &&
+              requestedManzana > 0 &&
+              Number(credit.lote) === requestedLote &&
+              Number(credit.manzana) === requestedManzana)
         );
 
-        if (!requestedCreditId || !selectedCredit) {
+        if (!selectedCredit) {
           return {
             ok: true,
             exists: true,

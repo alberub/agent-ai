@@ -91,6 +91,21 @@ function extractCreditoId(text) {
   return null;
 }
 
+function extractLoteManzana(text) {
+  const value = String(text || "");
+  const loteMatch = value.match(/lote[:\s#-]*(\d+)/i);
+  const manzanaMatch = value.match(/manzana[:\s#-]*(\d+)/i);
+
+  if (!loteMatch || !manzanaMatch) {
+    return null;
+  }
+
+  return {
+    lote: Number(loteMatch[1]),
+    manzana: Number(manzanaMatch[1]),
+  };
+}
+
 function findCreditoIdInHistory(messages) {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
@@ -184,6 +199,7 @@ function compareYearMonth(dateA, dateB) {
 
 async function validateCreditContext(from, message, historyMessages) {
   const explicitCreditoId = extractCreditoId(message);
+  const loteManzana = extractLoteManzana(message);
   const historicalCreditoId = findCreditoIdInHistory(
     historyMessages.filter((item) => item.role === "user")
   );
@@ -192,7 +208,14 @@ async function validateCreditContext(from, message, historyMessages) {
   return handleToolCall("validar_cliente_por_telefono", {
     telefono: from,
     ...(creditoId ? { credito_id: creditoId } : {}),
+    ...(loteManzana || {}),
   });
+}
+
+function wantsAllCredits(normalized) {
+  return /(mis creditos|todos mis creditos|como van mis creditos|resumen de mis creditos|informacion de mis creditos)/.test(
+    normalized
+  );
 }
 
 async function buildBusinessReply({ from, message, historyMessages }) {
@@ -206,22 +229,50 @@ async function buildBusinessReply({ from, message, historyMessages }) {
   if (validation.requiresCreditSelection) {
     const credits = validation.creditos || [];
 
-    if (validation.sameCampestre && credits.length > 0) {
-      const campestreNombre =
-        credits[0].campestreNombre || "el mismo campestre";
-      const lines = credits
+    if (validation.sameCampestre && credits.length > 0 && wantsAllCredits(normalized)) {
+      const summaries = await Promise.all(
+        credits.map((credit) =>
+          handleToolCall("consultar_resumen_credito", {
+            credito_id: credit.creditoId,
+          })
+        )
+      );
+
+      const campestreNombre = credits[0].campestreNombre || "el mismo campestre";
+      const lines = summaries
+        .filter((summary) => summary.ok)
         .map(
-          (credit) =>
-            `- crédito ${credit.creditoId}: lote ${credit.lote}, manzana ${credit.manzana}`
+          (summary) =>
+            `- lote ${summary.lote}, manzana ${summary.manzana}: saldo restante ${formatMoney(
+              summary.saldoRestante
+            )}, adeudo ${formatMoney(summary.adeudo)}, mensualidad ${formatMoney(
+              summary.mensualidad
+            )}`
         )
         .join("\n");
 
-      return `Encontré más de un crédito activo en ${campestreNombre}:\n${lines}\nIndícame el credito_id que deseas consultar a detalle.`;
+      return `Estos son los créditos activos que tiene en ${campestreNombre}:\n${lines}`;
     }
 
-    const creditList = credits.map((credit) => String(credit.creditoId)).join(", ");
+    if (validation.sameCampestre && credits.length > 0) {
+      const campestreNombre = credits[0].campestreNombre || "el mismo campestre";
+      const lines = credits
+        .map(
+          (credit) => `- lote ${credit.lote}, manzana ${credit.manzana}`
+        )
+        .join("\n");
 
-    return `Encontré más de un crédito activo asociado a este número. Indícame el credito_id que deseas consultar: ${creditList}.`;
+      return `Encontré más de un crédito activo en ${campestreNombre}:\n${lines}\nDígame sobre cuál crédito quiere información.`;
+    }
+
+    const options = credits
+      .map((credit) => {
+        const campestre = credit.campestreNombre || "campestre sin nombre";
+        return `- ${campestre}, lote ${credit.lote}, manzana ${credit.manzana}`;
+      })
+      .join("\n");
+
+    return `Encontré más de un crédito activo asociado a este número:\n${options}\nDígame sobre cuál crédito quiere información.`;
   }
 
   const creditoId = validation.creditoId;
