@@ -36,11 +36,17 @@ async function findCustomerWithActiveCreditByPhone(phone) {
         c.telefono,
         c.nombre,
         cr.credito_id,
-        cr.status AS credito_status
+        cr.status AS credito_status,
+        cr.id_campestre,
+        cr.lote,
+        cr.manzana,
+        camp.nombre AS campestre_nombre
       FROM clientes c
       LEFT JOIN creditos cr
         ON cr.cliente_id = c.cliente_id
        AND cr.status = 1
+      LEFT JOIN campestres camp
+        ON camp.id_campestre = cr.id_campestre
       WHERE regexp_replace(coalesce(c.telefono, ''), '\D', '', 'g') = $1
          OR right(regexp_replace(coalesce(c.telefono, ''), '\D', '', 'g'), 10) = $2
       ORDER BY
@@ -66,6 +72,10 @@ async function findCustomerWithActiveCreditByPhone(phone) {
       .map((row) => ({
         credito_id: row.credito_id,
         credito_status: row.credito_status,
+        id_campestre: row.id_campestre,
+        campestre_nombre: row.campestre_nombre || null,
+        lote: row.lote,
+        manzana: row.manzana,
       })),
   };
 

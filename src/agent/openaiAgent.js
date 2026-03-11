@@ -129,7 +129,7 @@ function isOffTopic(normalized) {
 }
 
 function isPaymentIntent(normalized) {
-  return /(ultimo pago|ultimos pagos|mis pagos|historial de pagos|abono|abone|abone|pague|pago realizado|pago de este mes|ya pague|ya realice el pago|fecha de pago|pagos)/.test(
+  return /(ultimo pago|ultimos pagos|mis pagos|historial de pagos|abono|abone|pague|pago realizado|pago de este mes|ya pague|ya realice el pago|fecha de pago|pagos)/.test(
     normalized
   );
 }
@@ -189,12 +189,10 @@ async function validateCreditContext(from, message, historyMessages) {
   );
   const creditoId = explicitCreditoId || historicalCreditoId || undefined;
 
-  const validation = await handleToolCall("validar_cliente_por_telefono", {
+  return handleToolCall("validar_cliente_por_telefono", {
     telefono: from,
     ...(creditoId ? { credito_id: creditoId } : {}),
   });
-
-  return validation;
 }
 
 async function buildBusinessReply({ from, message, historyMessages }) {
@@ -206,9 +204,22 @@ async function buildBusinessReply({ from, message, historyMessages }) {
   }
 
   if (validation.requiresCreditSelection) {
-    const creditList = (validation.creditos || [])
-      .map((credit) => String(credit.creditoId))
-      .join(", ");
+    const credits = validation.creditos || [];
+
+    if (validation.sameCampestre && credits.length > 0) {
+      const campestreNombre =
+        credits[0].campestreNombre || "el mismo campestre";
+      const lines = credits
+        .map(
+          (credit) =>
+            `- crédito ${credit.creditoId}: lote ${credit.lote}, manzana ${credit.manzana}`
+        )
+        .join("\n");
+
+      return `Encontré más de un crédito activo en ${campestreNombre}:\n${lines}\nIndícame el credito_id que deseas consultar a detalle.`;
+    }
+
+    const creditList = credits.map((credit) => String(credit.creditoId)).join(", ");
 
     return `Encontré más de un crédito activo asociado a este número. Indícame el credito_id que deseas consultar: ${creditList}.`;
   }
@@ -244,7 +255,11 @@ async function buildBusinessReply({ from, message, historyMessages }) {
       )} por ${formatMoney(latestPayment.abonoCliente)}.`;
     }
 
-    if (/(ultimo pago|fecha de pago|abono|abone|pague|pago realizado)/.test(normalized)) {
+    if (
+      /(ultimo pago|fecha de pago|abono|abone|pague|pago realizado)/.test(
+        normalized
+      )
+    ) {
       return `El último pago registrado del crédito ${creditoId} fue el ${formatSpanishDate(
         latestPayment.fechaPago
       )} por ${formatMoney(latestPayment.abonoCliente)}.`;

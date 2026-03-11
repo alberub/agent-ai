@@ -145,6 +145,12 @@ async function handleToolCall(toolName, args) {
       }
 
       if (activeCredits.length > 1) {
+        const distinctCampestres = new Set(
+          activeCredits
+            .map((credit) => credit.id_campestre)
+            .filter((value) => value !== null && value !== undefined)
+        );
+        const sameCampestre = distinctCampestres.size <= 1;
         const requestedCreditId = Number(args.credito_id);
         const selectedCredit = activeCredits.find(
           (credit) => credit.credito_id === requestedCreditId
@@ -157,11 +163,16 @@ async function handleToolCall(toolName, args) {
             activeCredit: true,
             multipleActiveCredits: true,
             requiresCreditSelection: true,
+            sameCampestre,
             clienteId: customer.cliente_id,
             nombre: shortName || customer.nombre,
             telefono: customer.telefono,
             creditos: activeCredits.map((credit) => ({
               creditoId: credit.credito_id,
+              campestreId: credit.id_campestre,
+              campestreNombre: credit.campestre_nombre,
+              lote: credit.lote,
+              manzana: credit.manzana,
             })),
             message:
               "El cliente tiene mas de un credito activo. Debe indicar el credito_id que desea consultar.",
@@ -174,12 +185,17 @@ async function handleToolCall(toolName, args) {
           activeCredit: true,
           multipleActiveCredits: true,
           requiresCreditSelection: false,
+          sameCampestre,
           clienteId: customer.cliente_id,
           nombre: shortName || customer.nombre,
           telefono: customer.telefono,
           creditoId: selectedCredit.credito_id,
           creditos: activeCredits.map((credit) => ({
             creditoId: credit.credito_id,
+            campestreId: credit.id_campestre,
+            campestreNombre: credit.campestre_nombre,
+            lote: credit.lote,
+            manzana: credit.manzana,
           })),
           message: `Cliente validado correctamente para el credito ${selectedCredit.credito_id}.`,
         };
