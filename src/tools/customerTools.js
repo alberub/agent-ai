@@ -3,6 +3,7 @@ const {
   getDebtByCreditId,
   getCreditSummaryByCreditId,
   getAdditionalChargesByCreditId,
+  getCreditPaymentsByCreditId,
 } = require("../repositories/customerRepository");
 const { getShortDisplayName } = require("../utils/phone");
 
@@ -77,6 +78,28 @@ const toolDefinitions = [
         },
       },
       required: ["credito_id"],
+    },
+  },
+  {
+    type: "function",
+    name: "consultar_pagos_credito",
+    strict: true,
+    description:
+      "Consulta pagos del credito en pagos_credito por credito_id. Solo devuelve fechaPago y abonoCliente.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        credito_id: {
+          type: "number",
+          description: "Identificador del credito activo.",
+        },
+        limite: {
+          type: "number",
+          description: "Cantidad maxima de pagos a consultar.",
+        },
+      },
+      required: ["credito_id", "limite"],
     },
   },
 ];
@@ -169,6 +192,22 @@ async function handleToolCall(toolName, args) {
         totalAdicional: charges.adeudoAgua + charges.adeudoPredial,
         message:
           `Adeudos adicionales del credito ${charges.creditoId}: agua ${charges.adeudoAgua}, predial ${charges.adeudoPredial}.`,
+      };
+    }
+
+    case "consultar_pagos_credito": {
+      const limit = Number(args.limite) > 0 ? Number(args.limite) : 5;
+      const payments = await getCreditPaymentsByCreditId(args.credito_id, limit);
+
+      return {
+        ok: true,
+        creditoId: payments.creditoId,
+        totalPagos: payments.totalPagos,
+        pagos: payments.pagos,
+        message:
+          payments.totalPagos > 0
+            ? `Se consultaron ${payments.totalPagos} pagos del credito ${payments.creditoId}.`
+            : `No se encontraron pagos para el credito ${payments.creditoId}.`,
       };
     }
 

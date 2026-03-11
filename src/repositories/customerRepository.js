@@ -1,6 +1,14 @@
 const db = require("../db");
 const { normalizePhone, lastTenDigits } = require("../utils/phone");
 
+function formatDate10(value) {
+  if (!value) {
+    return null;
+  }
+
+  return String(value).slice(0, 10);
+}
+
 async function findCustomerWithActiveCreditByPhone(phone) {
   const normalizedPhone = normalizePhone(phone);
   const phone10 = lastTenDigits(phone);
@@ -151,9 +159,38 @@ async function getAdditionalChargesByCreditId(creditoId) {
   };
 }
 
+async function getCreditPaymentsByCreditId(creditoId, limit = 5) {
+  const result = await db.query(
+    `
+      SELECT
+        credito_id,
+        fecha_pago,
+        abono_cliente
+      FROM pagos_credito
+      WHERE credito_id = $1
+      ORDER BY fecha_pago DESC, id DESC
+      LIMIT $2
+    `,
+    [creditoId, limit]
+  );
+
+  const payments = result.rows.map((row) => ({
+    creditoId: row.credito_id,
+    fechaPago: formatDate10(row.fecha_pago),
+    abonoCliente: Number(row.abono_cliente || 0),
+  }));
+
+  return {
+    creditoId,
+    pagos: payments,
+    totalPagos: payments.length,
+  };
+}
+
 module.exports = {
   findCustomerWithActiveCreditByPhone,
   getDebtByCreditId,
   getCreditSummaryByCreditId,
   getAdditionalChargesByCreditId,
+  getCreditPaymentsByCreditId,
 };
