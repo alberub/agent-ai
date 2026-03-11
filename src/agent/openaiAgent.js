@@ -149,6 +149,12 @@ function isPaymentIntent(normalized) {
   );
 }
 
+function isWriteActionIntent(normalized) {
+  return /(registrar un pago|registrar pago|quiero registrar un pago|quiero registrar pago|aplicar un pago|subir comprobante|adjuntar comprobante|modificar pago|editar pago|eliminar pago|actualizar pago|hacer un pago|realizar un pago)/.test(
+    normalized
+  );
+}
+
 function isAdditionalChargesIntent(normalized) {
   return /(agua|predial)/.test(normalized);
 }
@@ -279,6 +285,10 @@ async function buildBusinessReply({ from, message, historyMessages }) {
 
   if (isOffTopic(normalized)) {
     return "Solo puedo ayudarle con información relacionada con su crédito.";
+  }
+
+  if (isWriteActionIntent(normalized)) {
+    return "Puedo brindarle información sobre su crédito y sus pagos, pero no puedo registrar ni modificar pagos desde este chat.";
   }
 
   if (isPaidThisMonthIntent(normalized) || isPaymentIntent(normalized)) {
