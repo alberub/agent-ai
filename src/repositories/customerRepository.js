@@ -6,7 +6,23 @@ function formatDate10(value) {
     return null;
   }
 
-  return String(value).slice(0, 10);
+  if (value instanceof Date) {
+    return value.toISOString().slice(0, 10);
+  }
+
+  const raw = String(value);
+
+  if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
+    return raw.slice(0, 10);
+  }
+
+  const parsed = new Date(raw);
+
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toISOString().slice(0, 10);
+  }
+
+  return raw.slice(0, 10);
 }
 
 async function findCustomerWithActiveCreditByPhone(phone) {
@@ -120,7 +136,7 @@ async function getCreditSummaryByCreditId(creditoId) {
 
   return {
     creditoId: row.credito_id,
-    fechaInicio: row.fecha_inicio,
+    fechaInicio: formatDate10(row.fecha_inicio),
     plazoMeses: Number(row.plazo_meses || 0),
     tasaAnual: Number(row.tasa_anual || 0),
     enganche: Number(row.enganche || 0),
@@ -135,15 +151,15 @@ async function getCreditSummaryByCreditId(creditoId) {
     saldoRestante: Number(row.saldo_restante || 0),
     pagosRealizados: Number(row.pagos_realizados || 0),
     pagosVencidos: Number(row.pagos_vencidos || 0),
-    ultimoPago: row.ultimo_pago,
+    ultimoPago: formatDate10(row.ultimo_pago),
     adeudo: Number(row.adeudo || 0),
-    proximoPago: row.proximo_pago,
+    proximoPago: formatDate10(row.proximo_pago),
     estadoDetalle: Number(row.estado || 0),
     anualidadPospuesta: Boolean(row.anualidad_pospuesta),
     tipoPagoExtraordinario: Number(row.tipo_pago_extraordinario || 0),
-    fechaPagoExtraordinario: row.fecha_pago_extraordinario,
+    fechaPagoExtraordinario: formatDate10(row.fecha_pago_extraordinario),
     montoPagoExtraordinario: Number(row.monto_pago_extraordinario || 0),
-    fechaPagoExtraordinario2: row.fecha_pago_extraordinario2,
+    fechaPagoExtraordinario2: formatDate10(row.fecha_pago_extraordinario2),
     montoPagoExtraordinario2: Number(row.monto_pago_extraordinario2 || 0),
   };
 }
