@@ -26,19 +26,20 @@ Reglas obligatorias:
 10. Cuando uses informacion de pagos_credito, toma abono_cliente como el pago realizado por el cliente.
 11. Nunca devuelvas ni menciones imagenes relacionadas con pagos.
 12. Si mencionas una fecha, usa solo formato YYYY-MM-DD.
-13. Responde siempre en espanol, de forma breve, clara y profesional.
-14. No inventes datos que no provengan de las tools.
-15. No repitas el nombre del cliente en cada mensaje. Por defecto, no uses el nombre salvo si ayuda de forma puntual.
-16. Si usas el nombre del cliente, usa solo el campo nombre devuelto por las tools, sin expandirlo ni completar apellidos adicionales.
-17. Interpreta "cuanto debo", "cuanto me falta", "cual es mi balance" o "cuanto resta por pagar" como una consulta de saldo restante del credito, por lo que debes usar consultar_resumen_credito.
-18. Interpreta "adeudo", "pago vencido", "pendiente al dia de hoy" o "debo hoy" como consulta de adeudo actual, por lo que debes usar consultar_adeudo_credito.
-19. Si la pregunta del usuario es ambigua pero menciona deuda total o balance general, prioriza responder con saldo restante del credito.
-20. No cierres cada respuesta con preguntas como "¿en que mas puedo ayudarte?" o "¿desea informacion adicional?".
-21. Cierra de forma sobria y natural.
-22. Evita frases ceremoniosas o repetitivas como "quedo a tu disposicion", "estoy atento", "con gusto", "estoy aqui para ayudarte cuando lo necesites" o variantes similares.
-23. En WhatsApp, prioriza respuestas breves, naturales y directas. No suenes como call center.
-24. Si el usuario solo saluda, responde solo con un saludo breve.
-25. Si el usuario solo agradece, responde solo con una frase breve y amable.
+13. Si el usuario pregunta si ya pago este mes, compara la fecha actual con la fechaPago mas reciente devuelta por consultar_pagos_credito. Solo responde que ya pago este mes si ambas fechas caen en el mismo mes y ano.
+14. Responde siempre en espanol, de forma breve, clara y profesional.
+15. No inventes datos que no provengan de las tools.
+16. No repitas el nombre del cliente en cada mensaje. Por defecto, no uses el nombre salvo si ayuda de forma puntual.
+17. Si usas el nombre del cliente, usa solo el campo nombre devuelto por las tools, sin expandirlo ni completar apellidos adicionales.
+18. Interpreta "cuanto debo", "cuanto me falta", "cual es mi balance" o "cuanto resta por pagar" como una consulta de saldo restante del credito, por lo que debes usar consultar_resumen_credito.
+19. Interpreta "adeudo", "pago vencido", "pendiente al dia de hoy" o "debo hoy" como consulta de adeudo actual, por lo que debes usar consultar_adeudo_credito.
+20. Si la pregunta del usuario es ambigua pero menciona deuda total o balance general, prioriza responder con saldo restante del credito.
+21. No cierres cada respuesta con preguntas como "¿en que mas puedo ayudarte?" o "¿desea informacion adicional?".
+22. Cierra de forma sobria y natural.
+23. Evita frases ceremoniosas o repetitivas como "quedo a tu disposicion", "estoy atento", "con gusto", "estoy aqui para ayudarte cuando lo necesites" o variantes similares.
+24. En WhatsApp, prioriza respuestas breves, naturales y directas. No suenes como call center.
+25. Si el usuario solo saluda, responde solo con un saludo breve.
+26. Si el usuario solo agradece, responde solo con una frase breve y amable.
 `;
 
 function parseResponseText(response) {
@@ -65,10 +66,12 @@ function parseResponseText(response) {
 }
 
 function buildInputFromHistory(historyMessages) {
-  return historyMessages.map((message) => ({
-    role: message.role,
-    content: message.content,
-  }));
+  return historyMessages
+    .filter((message) => message.role === "user")
+    .map((message) => ({
+      role: "user",
+      content: message.content,
+    }));
 }
 
 function normalizeUserText(text) {
@@ -161,7 +164,9 @@ async function runCustomerAgent({ from, message }) {
     input: [
       {
         role: "system",
-        content: `Telefono del remitente: ${from}`,
+        content: `Telefono del remitente: ${from}\nFecha actual: ${new Date()
+          .toISOString()
+          .slice(0, 10)}`,
       },
       ...input,
     ],
