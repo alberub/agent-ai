@@ -14,27 +14,27 @@ const AGENT_INSTRUCTIONS = `
 Eres un asistente de cobranza por WhatsApp.
 
 Reglas obligatorias:
-1. Solo puedes responder temas relacionados con credito, adeudo, pagos, mensualidades, saldo restante, agua y predial asociados al credito.
+1. Solo puedes responder temas relacionados con el credito: saldo restante, adeudo actual, pagos, mensualidad, proximo pago, resumen del credito, agua, predial y datos propios del credito como lote, manzana, plazo o fecha de inicio.
 2. Nunca debes responder ni revelar datos personales del cliente, como direccion, colonia, municipio, email, telefonos alternos o cualquier otro dato no relacionado con el credito.
-3. Si el usuario pide informacion no relacionada con detalles del credito, responde de forma breve y amable que solo puedes ayudar con saldo, adeudos, pagos y otros detalles del credito.
+3. Si el usuario pide informacion no relacionada con su credito, responde de forma breve y amable que solo puedes ayudarle con temas de su credito.
 4. Antes de responder sobre credito, adeudo o estatus, primero usa la tool validar_cliente_por_telefono con el numero del remitente.
 5. Si el cliente no existe o no tiene credito activo con status 1, responde que se deben actualizar los datos del cliente.
 6. Si el usuario pregunta por adeudo del credito, usa consultar_adeudo_credito con el credito_id obtenido.
-7. Si el usuario pregunta por saldo, mensualidad, pagos, proximo pago o resumen del credito, usa consultar_resumen_credito con el credito_id obtenido.
+7. Si el usuario pregunta por saldo, mensualidad, pagos, proximo pago, lote, manzana, plazo, fecha de inicio o resumen del credito, usa consultar_resumen_credito con el credito_id obtenido.
 8. Si el usuario pregunta por agua, predial o adeudos adicionales, usa consultar_adeudos_adicionales_credito con el credito_id obtenido.
 9. Responde siempre en espanol, de forma breve, clara y profesional.
 10. No inventes datos que no provengan de las tools.
-11. No repitas el nombre del cliente en cada mensaje. Por defecto, no uses el nombre salvo en un saludo inicial muy puntual o si el usuario lo pide.
+11. No repitas el nombre del cliente en cada mensaje. Por defecto, no uses el nombre salvo si ayuda de forma puntual.
 12. Si usas el nombre del cliente, usa solo el campo nombre devuelto por las tools, sin expandirlo ni completar apellidos adicionales.
 13. Interpreta "cuanto debo", "cuanto me falta", "cual es mi balance" o "cuanto resta por pagar" como una consulta de saldo restante del credito, por lo que debes usar consultar_resumen_credito.
 14. Interpreta "adeudo", "pago vencido", "pendiente al dia de hoy" o "debo hoy" como consulta de adeudo actual, por lo que debes usar consultar_adeudo_credito.
 15. Si la pregunta del usuario es ambigua pero menciona deuda total o balance general, prioriza responder con saldo restante del credito.
 16. No cierres cada respuesta con preguntas como "¿en que mas puedo ayudarte?" o "¿desea informacion adicional?".
-17. Cierra de forma sobria y natural. Solo invita a continuar si realmente aporta contexto, y hazlo de manera ocasional, no en todos los mensajes.
+17. Cierra de forma sobria y natural.
 18. Evita frases ceremoniosas o repetitivas como "quedo a tu disposicion", "estoy atento", "con gusto", "estoy aqui para ayudarte cuando lo necesites" o variantes similares.
-19. Si el usuario solo saluda, responde con un saludo corto de una sola linea y menciona de forma natural que puedes revisar su credito.
-20. Si el usuario solo agradece, responde con una frase breve y amable sin agregar preguntas.
-21. En WhatsApp, prioriza respuestas breves, naturales y directas. No suenes como call center.
+19. En WhatsApp, prioriza respuestas breves, naturales y directas. No suenes como call center.
+20. Si el usuario solo saluda, responde solo con un saludo breve.
+21. Si el usuario solo agradece, responde solo con una frase breve y amable.
 `;
 
 function parseResponseText(response) {
@@ -75,6 +75,26 @@ function normalizeUserText(text) {
     .trim();
 }
 
+function getGreetingReply(normalized) {
+  if (/^buenos dias[!. ]*$/.test(normalized)) {
+    return "Buenos dias.";
+  }
+
+  if (/^buenas tardes[!. ]*$/.test(normalized)) {
+    return "Buenas tardes.";
+  }
+
+  if (/^buenas noches[!. ]*$/.test(normalized)) {
+    return "Buenas noches.";
+  }
+
+  if (/^(hola|buenas|que tal|hey|ey|holi)[!. ]*$/.test(normalized)) {
+    return "Hola.";
+  }
+
+  return null;
+}
+
 function getLightweightReply(message) {
   const normalized = normalizeUserText(message);
 
@@ -82,13 +102,9 @@ function getLightweightReply(message) {
     return null;
   }
 
-  const isGreeting =
-    /^(hola|buenas|buenos dias|buen dia|buenas tardes|buenas noches|que tal|hey|ey|holi)[!. ]*$/.test(
-      normalized
-    );
-
-  if (isGreeting) {
-    return "Hola. Si gustas, puedo revisar tu saldo, adeudos o pagos.";
+  const greetingReply = getGreetingReply(normalized);
+  if (greetingReply) {
+    return greetingReply;
   }
 
   const isSocialCheckIn =
@@ -97,7 +113,7 @@ function getLightweightReply(message) {
     );
 
   if (isSocialCheckIn) {
-    return "Gracias por preguntar. Puedo ayudarte con saldo, adeudos y pagos de tu credito.";
+    return "Bien, gracias.";
   }
 
   const isThanks =
@@ -106,7 +122,7 @@ function getLightweightReply(message) {
     );
 
   if (isThanks) {
-    return "Por nada, para servirle.";
+    return "Para servirle.";
   }
 
   return null;
@@ -119,6 +135,7 @@ async function runCustomerAgent({ from, message }) {
     content: message,
   });
 
+  const historyMessages = await getRecentChatMessages(from, 12);
   const lightweightReply = getLightweightReply(message);
 
   if (lightweightReply) {
@@ -131,7 +148,6 @@ async function runCustomerAgent({ from, message }) {
     return lightweightReply;
   }
 
-  const historyMessages = await getRecentChatMessages(from, 12);
   const input = buildInputFromHistory(historyMessages);
 
   let response = await openai.responses.create({

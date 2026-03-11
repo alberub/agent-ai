@@ -48,7 +48,7 @@ const toolDefinitions = [
     name: "consultar_resumen_credito",
     strict: true,
     description:
-      "Consulta informacion del credito y detalle_credito, como mensualidad, saldo restante, pagos y proximo pago.",
+      "Consulta informacion del credito y detalle_credito, como mensualidad, saldo restante, pagos, proximo pago, lote, manzana, plazo y fecha de inicio.",
     parameters: {
       type: "object",
       additionalProperties: false,
