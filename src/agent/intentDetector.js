@@ -29,9 +29,10 @@ function detectIntent(message) {
       /(mis creditos|todos mis creditos|como van mis creditos|resumen de mis creditos|informacion de mis creditos|balances de mis creditos|balance de mis creditos|saldos de mis creditos|cuales son los balances de mis creditos|cuales son los saldos de mis creditos)/.test(
         normalized
       ),
-    creditCountRemark: /^(tengo\s+\d+|son\s+\d+|son dos|tengo dos)[!. ]*$/.test(
-      normalized
-    ),
+    multipleCreditsCorrection:
+      /(tengo\s+\d+\s+creditos?|tengo dos creditos?|tengo mas de un credito|tengo varios creditos|son\s+\d+\s+creditos?|son dos creditos?|mas de un credito|varios creditos|olvide mencionar.*credit|se me olvido mencionar.*credit|disculpe.*credit)/.test(
+        normalized
+      ),
     paymentIntent:
       /(ultimo pago|ultimos pagos|mis pagos|historial de pagos|abono|abone|pague|pago realizado|pago de este mes|ya pague|ya realice el pago|fecha de pago|pagos)/.test(
         normalized

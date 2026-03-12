@@ -99,7 +99,7 @@ async function validateCreditContext(from, historyMessages, intent, message) {
   const selection = resolveCreditSelection(
     message,
     historyMessages.filter((item) => item.role === "user"),
-    intent.wantsAllCredits
+    intent.wantsAllCredits || intent.multipleCreditsCorrection
   );
 
   return handleToolCall("validar_cliente_por_telefono", {
@@ -259,11 +259,22 @@ async function buildBusinessReply({ from, message, historyMessages }) {
     return validation.message;
   }
 
-  if (validation.requiresCreditSelection) {
-    if (intent.creditCountRemark) {
-      return buildSelectionPrompt(validation);
-    }
+  if (intent.multipleCreditsCorrection) {
+    const resetValidation = await handleToolCall("validar_cliente_por_telefono", {
+      telefono: from,
+    });
 
+    if (resetValidation.requiresCreditSelection) {
+      if (resetValidation.sameCampestre) {
+        const summaries = await summarizeCredits(resetValidation.creditos || []);
+        return buildCreditsOverview(resetValidation.creditos || [], summaries);
+      }
+
+      return buildSelectionPrompt(resetValidation);
+    }
+  }
+
+  if (validation.requiresCreditSelection) {
     if (validation.sameCampestre && intent.wantsAllCredits) {
       const summaries = await summarizeCredits(validation.creditos || []);
       return buildCreditsOverview(validation.creditos || [], summaries);
