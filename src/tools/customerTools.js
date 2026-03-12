@@ -192,7 +192,7 @@ async function handleToolCall(toolName, args) {
               manzana: credit.manzana,
             })),
             message:
-              "El cliente tiene mas de un credito activo. Debe indicar el credito_id que desea consultar.",
+              "El cliente tiene mas de un credito activo y se necesita identificar cual desea consultar.",
           };
         }
 

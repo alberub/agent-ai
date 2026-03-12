@@ -207,7 +207,8 @@ async function getCreditPaymentsByCreditId(creditoId, limit = 5) {
         credito_id,
         fecha_pago,
         abono_cliente,
-        fecha_creacion
+        fecha_creacion,
+        COUNT(*) OVER() AS total_count
       FROM pagos_credito
       WHERE credito_id = $1
       ORDER BY fecha_pago DESC, fecha_creacion DESC
@@ -225,7 +226,7 @@ async function getCreditPaymentsByCreditId(creditoId, limit = 5) {
   return {
     creditoId,
     pagos: payments,
-    totalPagos: payments.length,
+    totalPagos: Number(result.rows[0]?.total_count || 0),
   };
 }
 
