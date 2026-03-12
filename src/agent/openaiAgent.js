@@ -2,6 +2,10 @@ const {
   getRecentChatMessages,
   saveChatMessage,
 } = require("../repositories/chatRepository");
+const {
+  getChatContext,
+  saveChatContext,
+} = require("../repositories/chatContextRepository");
 const { handleToolCall } = require("../tools/customerTools");
 const { detectIntent } = require("./intentDetector");
 const {
@@ -10,7 +14,10 @@ const {
   getCurrentDateInMexico,
   compareYearMonth,
 } = require("./textUtils");
-const { resolveCreditSelection } = require("./creditContext");
+const {
+  extractCreditoId,
+  extractLoteManzana,
+} = require("./creditContext");
 const { polishWhatsAppReply } = require("../services/openAiToneService");
 
 function buildGreetingReply(normalized) {
@@ -29,289 +36,558 @@ function buildGreetingReply(normalized) {
   return "Hola.";
 }
 
-function buildSelectionPrompt(validation) {
-  const credits = validation.creditos || [];
+function normalizeState(summary) {
+  return {
+    pendingAction: summary?.pendingAction || null,
+    lastTopic: summary?.lastTopic || null,
+    sameCampestre: Boolean(summary?.sameCampestre),
+    availableCredits: Array.isArray(summary?.availableCredits)
+      ? summary.availableCredits
+      : [],
+    selectedCreditIds: Array.isArray(summary?.selectedCreditIds)
+      ? summary.selectedCreditIds.map(Number).filter(Boolean)
+      : [],
+  };
+}
 
-  if (validation.sameCampestre && credits.length > 0) {
-    const campestreNombre = credits[0].campestreNombre || "su desarrollo";
-    const lines = credits
-      .map((credit) => `- Lote ${credit.lote}, manzana ${credit.manzana}`)
-      .join("\n");
-
-    return `Encontre mas de un credito activo en ${campestreNombre}:\n${lines}\nDigame sobre cual credito quiere informacion.`;
+function detectTopic(intent) {
+  if (intent.additionalCharges) {
+    return "charges";
   }
-
-  const lines = credits
-    .map((credit) => {
-      const campestre = credit.campestreNombre || "desarrollo sin nombre";
-      return `- ${campestre}, lote ${credit.lote}, manzana ${credit.manzana}`;
-    })
-    .join("\n");
-
-  return `Encontre mas de un credito activo asociado a este numero:\n${lines}\nDigame sobre cual credito quiere informacion.`;
-}
-
-async function summarizeCredits(credits) {
-  const summaries = await Promise.all(
-    credits.map((credit) =>
-      handleToolCall("consultar_resumen_credito", {
-        credito_id: credit.creditoId,
-      })
-    )
-  );
-
-  return summaries.filter((summary) => summary.ok);
-}
-
-function buildCreditsOverview(credits, summaries) {
-  const campestreNombre = credits[0]?.campestreNombre || "su desarrollo";
-  const lines = summaries
-    .map(
-      (summary) =>
-        `- Lote ${summary.lote}, manzana ${summary.manzana}: saldo restante ${formatMoney(
-          summary.saldoRestante
-        )}, adeudo ${formatMoney(summary.adeudo)}, mensualidad ${formatMoney(
-          summary.mensualidad
-        )}`
-    )
-    .join("\n");
-
-  return `Estos son sus creditos activos en ${campestreNombre}:\n${lines}`;
-}
-
-function buildCreditLabel(validation, summary) {
-  const selectedCredit = (validation.creditos || []).find(
-    (credit) => credit.creditoId === validation.creditoId
-  );
-
-  if (selectedCredit?.campestreNombre) {
-    return `${selectedCredit.campestreNombre}, lote ${selectedCredit.lote}, manzana ${selectedCredit.manzana}`;
-  }
-
-  if (summary?.lote && summary?.manzana) {
-    return `lote ${summary.lote}, manzana ${summary.manzana}`;
-  }
-
-  return "su credito";
-}
-
-async function validateCreditContext(from, historyMessages, intent, message) {
-  const selection = resolveCreditSelection(
-    message,
-    historyMessages.filter((item) => item.role === "user"),
-    intent.wantsAllCredits || intent.multipleCreditsCorrection
-  );
-
-  return handleToolCall("validar_cliente_por_telefono", {
-    telefono: from,
-    ...(selection?.creditoId ? { credito_id: selection.creditoId } : {}),
-    ...(selection?.lote ? { lote: selection.lote } : {}),
-    ...(selection?.manzana ? { manzana: selection.manzana } : {}),
-  });
-}
-
-async function buildPaymentReply(intent, validation) {
-  const payments = await handleToolCall("consultar_pagos_credito", {
-    credito_id: validation.creditoId,
-    limite: 3,
-  });
-
-  if (!payments.totalPagos || !payments.pagos?.length) {
-    return "No veo pagos registrados para ese credito.";
-  }
-
-  const latestPayment = payments.pagos[0];
-  const today = getCurrentDateInMexico();
 
   if (intent.paidThisMonth) {
-    if (compareYearMonth(latestPayment.fechaPago, today)) {
-      return `Si, el ultimo pago registrado fue el ${formatSpanishDate(
+    return "paidThisMonth";
+  }
+
+  if (intent.paymentCount) {
+    return "paymentCount";
+  }
+
+  if (intent.paymentIntent) {
+    return "payments";
+  }
+
+  if (intent.debt && !intent.balance) {
+    return "debt";
+  }
+
+  if (intent.nextPayment) {
+    return "nextPayment";
+  }
+
+  if (intent.monthlyPayment) {
+    return "monthlyPayment";
+  }
+
+  if (intent.term) {
+    return "term";
+  }
+
+  if (intent.startDate) {
+    return "startDate";
+  }
+
+  if (intent.lotOrBlock) {
+    return "lotOrBlock";
+  }
+
+  if (intent.balance) {
+    return "balance";
+  }
+
+  if (intent.creditDetail || intent.wantsAllCredits) {
+    return "summary";
+  }
+
+  return null;
+}
+
+function isBothSelection(normalized) {
+  return /^(ambos|los dos|las dos|sobre ambos|sobre los dos|de ambos|de los dos|ambas)[!. ]*$/.test(
+    normalized
+  );
+}
+
+function buildCreditLabel(credit, includeCampestre = false) {
+  const base = `lote ${credit.lote}, manzana ${credit.manzana}`;
+
+  if (includeCampestre && credit.campestreNombre) {
+    return `${credit.campestreNombre}, ${base}`;
+  }
+
+  return base;
+}
+
+function buildSelectionPrompt(credits, sameCampestre) {
+  const lines = credits
+    .map((credit) => `- ${buildCreditLabel(credit, !sameCampestre)}`)
+    .join("\n");
+
+  if (sameCampestre) {
+    return `Encontre mas de un credito activo:\n${lines}\nDigame sobre cual credito quiere informacion.`;
+  }
+
+  return `Encontre creditos activos en distintos desarrollos:\n${lines}\nDigame sobre cual credito quiere informacion.`;
+}
+
+function buildNoWriteReply() {
+  return "Puedo ayudarle con consultas de su credito y de sus pagos, pero desde este chat no es posible registrar o modificar pagos.";
+}
+
+function buildOffTopicReply() {
+  return "Puedo ayudarle con detalles de su credito, como saldo, adeudo, pagos, lote, manzana y fechas.";
+}
+
+function buildAvailableCredits(validation) {
+  if (validation.creditos?.length) {
+    return validation.creditos;
+  }
+
+  if (validation.creditoId) {
+    return [
+      {
+        creditoId: validation.creditoId,
+      },
+    ];
+  }
+
+  return [];
+}
+
+function chooseExplicitCredit(validation, message) {
+  const explicitCreditoId = extractCreditoId(message);
+  if (explicitCreditoId) {
+    return validation.creditos?.find(
+      (credit) => Number(credit.creditoId) === explicitCreditoId
+    );
+  }
+
+  const loteManzana = extractLoteManzana(message);
+  if (loteManzana) {
+    return validation.creditos?.find(
+      (credit) =>
+        Number(credit.lote) === Number(loteManzana.lote) &&
+        Number(credit.manzana) === Number(loteManzana.manzana)
+    );
+  }
+
+  return null;
+}
+
+function getSelectedCredits(validation, state, message, intent) {
+  const availableCredits = validation.creditos || [];
+
+  if (availableCredits.length <= 1) {
+    return {
+      scope: "single",
+      credits:
+        availableCredits.length > 0
+          ? availableCredits
+          : [{ creditoId: validation.creditoId }],
+    };
+  }
+
+  if (intent.multipleCreditsCorrection) {
+    return validation.sameCampestre
+      ? { scope: "all", credits: availableCredits }
+      : { scope: "ask", credits: availableCredits };
+  }
+
+  const explicitCredit = chooseExplicitCredit(validation, message);
+  if (explicitCredit) {
+    return {
+      scope: "single",
+      credits: [explicitCredit],
+    };
+  }
+
+  if (isBothSelection(intent.normalized)) {
+    return validation.sameCampestre
+      ? { scope: "all", credits: availableCredits }
+      : { scope: "ask", credits: availableCredits };
+  }
+
+  if (intent.wantsAllCredits) {
+    return validation.sameCampestre
+      ? { scope: "all", credits: availableCredits }
+      : { scope: "ask", credits: availableCredits };
+  }
+
+  if (state.pendingAction === "choose_credit_scope") {
+    if (state.selectedCreditIds.length > 1 && validation.sameCampestre) {
+      return { scope: "all", credits: availableCredits };
+    }
+
+    return { scope: "ask", credits: availableCredits };
+  }
+
+  if (state.selectedCreditIds.length > 1 && validation.sameCampestre) {
+    const selected = availableCredits.filter((credit) =>
+      state.selectedCreditIds.includes(Number(credit.creditoId))
+    );
+
+    if (selected.length > 1) {
+      return { scope: "all", credits: selected };
+    }
+  }
+
+  if (state.selectedCreditIds.length === 1) {
+    const selected = availableCredits.find(
+      (credit) =>
+        Number(credit.creditoId) === Number(state.selectedCreditIds[0])
+    );
+
+    if (selected) {
+      return { scope: "single", credits: [selected] };
+    }
+  }
+
+  return { scope: "ask", credits: availableCredits };
+}
+
+async function getCreditSummary(creditoId) {
+  return handleToolCall("consultar_resumen_credito", { credito_id: creditoId });
+}
+
+async function getCreditPayments(creditoId, limit = 3) {
+  return handleToolCall("consultar_pagos_credito", {
+    credito_id: creditoId,
+    limite: limit,
+  });
+}
+
+async function getCreditCharges(creditoId) {
+  return handleToolCall("consultar_adeudos_adicionales_credito", {
+    credito_id: creditoId,
+  });
+}
+
+async function getCreditDebt(creditoId) {
+  return handleToolCall("consultar_adeudo_credito", { credito_id: creditoId });
+}
+
+async function buildSingleCreditReply(topic, credit) {
+  if (topic === "payments" || topic === "paymentCount" || topic === "paidThisMonth") {
+    const payments = await getCreditPayments(credit.creditoId, 3);
+
+    if (!payments.totalPagos || !payments.pagos?.length) {
+      return "No veo pagos registrados para ese credito.";
+    }
+
+    const latestPayment = payments.pagos[0];
+
+    if (topic === "paidThisMonth") {
+      const today = getCurrentDateInMexico();
+
+      if (compareYearMonth(latestPayment.fechaPago, today)) {
+        return `Si, el ultimo pago registrado fue el ${formatSpanishDate(
+          latestPayment.fechaPago
+        )} por ${formatMoney(latestPayment.abonoCliente)}.`;
+      }
+
+      return `No veo un pago registrado este mes. El ultimo pago registrado fue el ${formatSpanishDate(
         latestPayment.fechaPago
       )} por ${formatMoney(latestPayment.abonoCliente)}.`;
     }
 
-    return `No veo un pago registrado este mes. El ultimo pago registrado fue el ${formatSpanishDate(
-      latestPayment.fechaPago
-    )} por ${formatMoney(latestPayment.abonoCliente)}.`;
-  }
+    if (topic === "paymentCount") {
+      return `Tiene ${payments.totalPagos} pagos registrados en total.`;
+    }
 
-  if (intent.paymentCount) {
-    return `Tiene ${payments.totalPagos} pagos registrados en total.`;
-  }
-
-  if (
-    /(ultimo pago|fecha de pago|abono|abone|pague|pago realizado)/.test(
-      intent.normalized
-    )
-  ) {
     return `El ultimo pago registrado fue el ${formatSpanishDate(
       latestPayment.fechaPago
     )} por ${formatMoney(latestPayment.abonoCliente)}.`;
   }
 
-  const lines = payments.pagos
-    .map(
-      (payment) =>
-        `- ${formatSpanishDate(payment.fechaPago)}: ${formatMoney(
-          payment.abonoCliente
-        )}`
-    )
-    .join("\n");
-
-  return `Estos son los pagos mas recientes:\n${lines}`;
-}
-
-async function buildChargesReply(intent, validation) {
-  const charges = await handleToolCall("consultar_adeudos_adicionales_credito", {
-    credito_id: validation.creditoId,
-  });
-
-  if (/agua/.test(intent.normalized) && !/predial/.test(intent.normalized)) {
-    return `El adeudo de agua es ${formatMoney(charges.adeudoAgua)}.`;
+  if (topic === "charges") {
+    const charges = await getCreditCharges(credit.creditoId);
+    return `Los adeudos adicionales son: agua ${formatMoney(
+      charges.adeudoAgua
+    )} y predial ${formatMoney(charges.adeudoPredial)}.`;
   }
 
-  if (/predial/.test(intent.normalized) && !/agua/.test(intent.normalized)) {
-    return `El adeudo predial es ${formatMoney(charges.adeudoPredial)}.`;
+  if (topic === "debt") {
+    const debt = await getCreditDebt(credit.creditoId);
+    return `El adeudo actual es ${formatMoney(debt.adeudoTotal)}.`;
   }
 
-  return `Los adeudos adicionales son: agua ${formatMoney(
-    charges.adeudoAgua
-  )} y predial ${formatMoney(charges.adeudoPredial)}.`;
-}
-
-async function buildSummaryReply(intent, validation) {
-  const summary = await handleToolCall("consultar_resumen_credito", {
-    credito_id: validation.creditoId,
-  });
+  const summary = await getCreditSummary(credit.creditoId);
 
   if (!summary.ok) {
     return summary.message;
   }
 
-  const creditLabel = buildCreditLabel(validation, summary);
+  const label = buildCreditLabel(
+    {
+      campestreNombre: credit.campestreNombre,
+      lote: summary.lote,
+      manzana: summary.manzana,
+    },
+    Boolean(credit.campestreNombre)
+  );
 
-  if (intent.lotOrBlock) {
-    if (/lote/.test(intent.normalized) && /manzana/.test(intent.normalized)) {
-      return `Ese credito corresponde a lote ${summary.lote} y manzana ${summary.manzana}.`;
-    }
-
-    if (/lote/.test(intent.normalized)) {
-      return `Ese credito corresponde al lote ${summary.lote}.`;
-    }
-
-    return `Ese credito corresponde a la manzana ${summary.manzana}.`;
-  }
-
-  if (intent.term) {
-    return `El plazo de ${creditLabel} es de ${summary.plazoMeses} meses.`;
-  }
-
-  if (intent.startDate) {
-    return `La fecha de inicio de ${creditLabel} es ${formatSpanishDate(
-      summary.fechaInicio
-    )}.`;
-  }
-
-  if (intent.nextPayment) {
-    return `El proximo pago de ${creditLabel} es el ${formatSpanishDate(
-      summary.proximoPago
-    )} por ${formatMoney(summary.mensualidad)}.`;
-  }
-
-  if (intent.monthlyPayment && !intent.nextPayment) {
-    return `La mensualidad actual de ${creditLabel} es ${formatMoney(
-      summary.mensualidad
-    )}.`;
-  }
-
-  if (intent.balance) {
-    return `El saldo restante de ${creditLabel} es ${formatMoney(
+  if (topic === "balance") {
+    return `El saldo restante de ${label} es ${formatMoney(
       summary.saldoRestante
     )}.`;
   }
 
-  return `Resumen de ${creditLabel}: saldo restante ${formatMoney(
+  if (topic === "monthlyPayment") {
+    return `La mensualidad actual de ${label} es ${formatMoney(
+      summary.mensualidad
+    )}.`;
+  }
+
+  if (topic === "nextPayment") {
+    return `El proximo pago de ${label} es el ${formatSpanishDate(
+      summary.proximoPago
+    )} por ${formatMoney(summary.mensualidad)}.`;
+  }
+
+  if (topic === "term") {
+    return `El plazo de ${label} es de ${summary.plazoMeses} meses.`;
+  }
+
+  if (topic === "startDate") {
+    return `La fecha de inicio de ${label} es ${formatSpanishDate(
+      summary.fechaInicio
+    )}.`;
+  }
+
+  if (topic === "lotOrBlock") {
+    return `Ese credito corresponde a lote ${summary.lote} y manzana ${summary.manzana}.`;
+  }
+
+  return `Resumen de ${label}: saldo restante ${formatMoney(
     summary.saldoRestante
   )}, mensualidad ${formatMoney(summary.mensualidad)}, adeudo ${formatMoney(
     summary.adeudo
   )} y proximo pago ${formatSpanishDate(summary.proximoPago)}.`;
 }
 
+async function buildMultipleCreditsReply(topic, credits) {
+  if (topic === "payments" || topic === "paymentCount" || topic === "paidThisMonth") {
+    const paymentsByCredit = await Promise.all(
+      credits.map(async (credit) => ({
+        credit,
+        payments: await getCreditPayments(credit.creditoId, 1),
+      }))
+    );
+
+    if (topic === "paymentCount") {
+      const lines = paymentsByCredit.map(
+        ({ credit, payments }) =>
+          `- ${buildCreditLabel(credit)}: ${payments.totalPagos} pagos registrados`
+      );
+
+      return `Estos son los pagos registrados por credito:\n${lines.join("\n")}`;
+    }
+
+    if (topic === "paidThisMonth") {
+      const today = getCurrentDateInMexico();
+      const lines = paymentsByCredit.map(({ credit, payments }) => {
+        const latestPayment = payments.pagos?.[0];
+
+        if (!latestPayment) {
+          return `- ${buildCreditLabel(credit)}: sin pagos registrados`;
+        }
+
+        if (compareYearMonth(latestPayment.fechaPago, today)) {
+          return `- ${buildCreditLabel(credit)}: si, pago el ${formatSpanishDate(
+            latestPayment.fechaPago
+          )} por ${formatMoney(latestPayment.abonoCliente)}`;
+        }
+
+        return `- ${buildCreditLabel(credit)}: no hay pago registrado este mes`;
+      });
+
+      return `Esto es lo que veo sobre el pago de este mes:\n${lines.join("\n")}`;
+    }
+
+    const lines = paymentsByCredit.map(({ credit, payments }) => {
+      const latestPayment = payments.pagos?.[0];
+
+      if (!latestPayment) {
+        return `- ${buildCreditLabel(credit)}: sin pagos registrados`;
+      }
+
+      return `- ${buildCreditLabel(credit)}: ultimo pago ${formatSpanishDate(
+        latestPayment.fechaPago
+      )} por ${formatMoney(latestPayment.abonoCliente)}`;
+    });
+
+    return `Estos son los ultimos pagos por credito:\n${lines.join("\n")}`;
+  }
+
+  if (topic === "charges") {
+    const chargesByCredit = await Promise.all(
+      credits.map(async (credit) => ({
+        credit,
+        charges: await getCreditCharges(credit.creditoId),
+      }))
+    );
+
+    const lines = chargesByCredit.map(
+      ({ credit, charges }) =>
+        `- ${buildCreditLabel(credit)}: agua ${formatMoney(
+          charges.adeudoAgua
+        )}, predial ${formatMoney(charges.adeudoPredial)}`
+    );
+
+    return `Estos son los adeudos adicionales por credito:\n${lines.join("\n")}`;
+  }
+
+  if (topic === "debt") {
+    const debtsByCredit = await Promise.all(
+      credits.map(async (credit) => ({
+        credit,
+        debt: await getCreditDebt(credit.creditoId),
+      }))
+    );
+
+    const lines = debtsByCredit.map(
+      ({ credit, debt }) =>
+        `- ${buildCreditLabel(credit)}: adeudo ${formatMoney(debt.adeudoTotal)}`
+    );
+
+    return `Estos son los adeudos por credito:\n${lines.join("\n")}`;
+  }
+
+  const summaries = await Promise.all(
+    credits.map(async (credit) => ({
+      credit,
+      summary: await getCreditSummary(credit.creditoId),
+    }))
+  );
+
+  const validSummaries = summaries.filter(({ summary }) => summary.ok);
+
+  const lines = validSummaries.map(({ credit, summary }) => {
+    if (topic === "balance") {
+      return `- ${buildCreditLabel(credit)}: saldo restante ${formatMoney(
+        summary.saldoRestante
+      )}`;
+    }
+
+    if (topic === "monthlyPayment") {
+      return `- ${buildCreditLabel(credit)}: mensualidad ${formatMoney(
+        summary.mensualidad
+      )}`;
+    }
+
+    if (topic === "nextPayment") {
+      return `- ${buildCreditLabel(credit)}: proximo pago ${formatSpanishDate(
+        summary.proximoPago
+      )} por ${formatMoney(summary.mensualidad)}`;
+    }
+
+    if (topic === "term") {
+      return `- ${buildCreditLabel(credit)}: plazo ${summary.plazoMeses} meses`;
+    }
+
+    if (topic === "startDate") {
+      return `- ${buildCreditLabel(credit)}: fecha de inicio ${formatSpanishDate(
+        summary.fechaInicio
+      )}`;
+    }
+
+    return `- ${buildCreditLabel(credit)}: saldo restante ${formatMoney(
+      summary.saldoRestante
+    )}, adeudo ${formatMoney(summary.adeudo)}, mensualidad ${formatMoney(
+      summary.mensualidad
+    )}`;
+  });
+
+  return `Esto es lo que veo sobre sus creditos:\n${lines.join("\n")}`;
+}
+
+async function saveOperationalContext(from, validation, stateUpdate) {
+  const mergedState = normalizeState(stateUpdate);
+
+  await saveChatContext({
+    telefono: from,
+    summary: mergedState,
+    lastCreditoId:
+      mergedState.selectedCreditIds.length === 1
+        ? mergedState.selectedCreditIds[0]
+        : null,
+    lastClienteId: validation?.clienteId || null,
+  });
+}
+
 async function buildBusinessReply({ from, message, historyMessages }) {
   const intent = detectIntent(message);
+  const storedContext = await getChatContext(from);
+  const state = normalizeState(storedContext.summary);
+  const topic = detectTopic(intent) || state.lastTopic;
 
   if (intent.offTopic) {
-    return "Puedo ayudarle con detalles de su credito, como saldo, adeudo, pagos, lote, manzana y fechas.";
+    return buildOffTopicReply();
   }
 
   if (intent.writeAction) {
-    return "Puedo ayudarle con consultas de su credito y de sus pagos, pero desde este chat no es posible registrar o modificar pagos.";
+    return buildNoWriteReply();
   }
 
-  const validation = await validateCreditContext(
-    from,
-    historyMessages,
-    intent,
-    message
-  );
+  const baseValidation = await handleToolCall("validar_cliente_por_telefono", {
+    telefono: from,
+  });
 
-  if (!validation.exists || !validation.activeCredit) {
-    return validation.message;
+  if (!baseValidation.exists || !baseValidation.activeCredit) {
+    await saveOperationalContext(from, baseValidation, {
+      pendingAction: null,
+      lastTopic: null,
+      sameCampestre: false,
+      availableCredits: [],
+      selectedCreditIds: [],
+    });
+    return baseValidation.message;
   }
 
-  if (intent.multipleCreditsCorrection) {
-    const resetValidation = await handleToolCall("validar_cliente_por_telefono", {
-      telefono: from,
+  const availableCredits = buildAvailableCredits(baseValidation);
+  let selection = getSelectedCredits(baseValidation, state, message, intent);
+
+  if (!topic && isBothSelection(intent.normalized) && baseValidation.sameCampestre) {
+    selection = { scope: "all", credits: availableCredits };
+  }
+
+  if (selection.scope === "ask") {
+    await saveOperationalContext(from, baseValidation, {
+      pendingAction: "choose_credit_scope",
+      lastTopic: topic,
+      sameCampestre: baseValidation.sameCampestre,
+      availableCredits,
+      selectedCreditIds: [],
     });
 
-    if (resetValidation.requiresCreditSelection) {
-      if (resetValidation.sameCampestre) {
-        const summaries = await summarizeCredits(resetValidation.creditos || []);
-        return buildCreditsOverview(resetValidation.creditos || [], summaries);
-      }
+    return buildSelectionPrompt(availableCredits, baseValidation.sameCampestre);
+  }
 
-      return buildSelectionPrompt(resetValidation);
+  const selectedCreditIds = selection.credits
+    .map((credit) => Number(credit.creditoId))
+    .filter(Boolean);
+
+  await saveOperationalContext(from, baseValidation, {
+    pendingAction: null,
+    lastTopic: topic,
+    sameCampestre: baseValidation.sameCampestre,
+    availableCredits,
+    selectedCreditIds,
+  });
+
+  if (!topic) {
+    if (selection.scope === "all") {
+      return buildMultipleCreditsReply("summary", selection.credits);
     }
+
+    return buildSingleCreditReply("summary", selection.credits[0]);
   }
 
-  if (validation.requiresCreditSelection) {
-    if (validation.sameCampestre && intent.wantsAllCredits) {
-      const summaries = await summarizeCredits(validation.creditos || []);
-      return buildCreditsOverview(validation.creditos || [], summaries);
-    }
-
-    return buildSelectionPrompt(validation);
+  if (selection.scope === "all") {
+    return buildMultipleCreditsReply(topic, selection.credits);
   }
 
-  if (intent.additionalCharges) {
-    return buildChargesReply(intent, validation);
-  }
-
-  if (intent.paymentIntent || intent.paidThisMonth) {
-    return buildPaymentReply(intent, validation);
-  }
-
-  if (intent.debt && !intent.balance) {
-    const debt = await handleToolCall("consultar_adeudo_credito", {
-      credito_id: validation.creditoId,
-    });
-
-    return `El adeudo actual es ${formatMoney(debt.adeudoTotal)}.`;
-  }
-
-  if (
-    intent.balance ||
-    intent.creditDetail ||
-    intent.monthlyPayment ||
-    intent.nextPayment ||
-    intent.term ||
-    intent.startDate ||
-    intent.lotOrBlock
-  ) {
-    return buildSummaryReply(intent, validation);
-  }
-
-  return "Puedo ayudarle con saldo, adeudo, pagos, agua, predial y otros detalles de su credito.";
+  return buildSingleCreditReply(topic, selection.credits[0]);
 }
 
 async function runCustomerAgent({ from, message }) {
